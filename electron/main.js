@@ -383,7 +383,14 @@ ipcMain.handle("win:op", (_e, { op }) => {
   if (!mainWindow) return { ok: false };
   if (op === "minimize") mainWindow.minimize();
   else if (op === "toggleMaximize") {
-    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    if (mainWindow.isMaximized()) {
+      // 还原到窗口化：先取“还原边界”，unmaximize 后立即吸附到合法边界，
+      // 避免 unmaximize 使用被竞态污染的还原尺寸，出现偏小/靠左上角的窗口。
+      const nb = mainWindow.getNormalBounds();
+      mainWindow.unmaximize();
+      const target = clampToScreen(nb);
+      if (target) mainWindow.setBounds(target);
+    }
     else mainWindow.maximize();
   } else if (op === "close") mainWindow.hide(); // 关闭 = 最小化到托盘
   else if (op === "show") { mainWindow.show(); mainWindow.focus(); }
