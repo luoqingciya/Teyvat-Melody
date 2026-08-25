@@ -33,6 +33,7 @@ function dataRoot() {
 
 let backendProc = null;
 let mainWindow = null;
+let launchBounds = null; // 启动时的窗口边界（居中大窗口），作为还原兜底
 let lyricsWindow = null;
 let miniWindow = null;
 let tray = null;
@@ -193,6 +194,8 @@ function createMainWindow() {
       nodeIntegration: false,
     },
   });
+  // 记录启动时真实窗口边界（含 DWM 边框微调），作为窗口化还原的兜底
+  launchBounds = mainWindow.getBounds();
   // 先加载本地加载页，窗口立即可见；后端就绪后再跳转 SPA（见 whenReady）
   mainWindow.loadFile(path.join(__dirname, "loading.html"));
   // 外部链接用系统浏览器打开
@@ -404,6 +407,27 @@ let fsRestoreBounds = null;
 // 窗口，Windows 下 setKiosk(true) 后 isKiosk() 仍可能返回 false，因此不能只用 isKiosk()/isFullScreen()
 // 作为守卫依据，须用自维护标志让拖拽/窗口控制保持可靠。
 let nativeFullscreen = false;
+// 校验并修正还原边界：小于最小尺寸或跑到屏幕外的"畸形"边界，直接回退到启动时的居中大窗口；
+// 否则仅把位置收紧到工作区（DWM/竞态所致的小窗口/左上角由此被兜底修复）。
+function clampToScreen(bounds) {
+  const cur = bounds || launchBounds;
+  if (!cur || !mainWindow || mainWindow.isDestroyed()) return cur || null;
+  const [minW, minH] = mainWindow.getMinimumSize();
+  const { screen } = require("electron");
+  const wa = screen.getPrimaryDisplay().workArea;
+  const w = Math.round(cur.width);
+  const h = Math.round(cur.height);
+  const x = Math.round(cur.x);
+  const y = Math.round(cur.y);
+  if (!(w >= minW && h >= minH)) {
+    return launchBounds ? { ...launchBounds } : { x, y, width: w, height: h };
+  }
+  const cw = Math.max(w, minW);
+  const ch = Math.max(h, minH);
+  const cx = Math.min(Math.max(x, wa.x), wa.x + Math.max(0, wa.width - cw));
+  const cy = Math.min(Math.max(y, wa.y), wa.y + Math.max(0, wa.height - ch));
+  return { x: cx, y: cy, width: cw, height: ch };
+}
 ipcMain.handle("win:fullscreen", (_e, { flag }) => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
   const wantFs = !!flag;
@@ -415,7 +439,7 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
       // 从最大化 state 直接 setKiosk 不会隐藏任务栏（窗口仍按最大化/工作区处理），
       // 先还原成普通窗口再进入 kiosk，kiosk 会强制窗口覆盖整块显示器并遮蔽任务栏。
       wasMaximizedBeforeFs = true;
-      fsRestoreBounds = mainWindow.getNormalBounds();
+      fsRestoreBounds = clampToScreen(mainWindow.getNormalBounds());
       mainWindow.unmaximize();
       if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
       mainWindow.setKiosk(true);
@@ -433,7 +457,8 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
     if (wasMaximizedBeforeFs) {
       mainWindow.setResizable(true);
       // 显式回到“进入前”的正常边界再最大化，确保之后的“窗口化”是居中大窗口而非小窗/左上角
-      if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
+      const target = clampToScreen(fsRestoreBounds);
+      if (target) mainWindow.setBounds(target);
       mainWindow.maximize();
     }
     wasMaximizedBeforeFs = false;
