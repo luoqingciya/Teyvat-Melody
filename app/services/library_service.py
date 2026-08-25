@@ -114,27 +114,42 @@ def scan_and_register(
     music = paths.music_dir()
     # 一次性读取已有 path 集合，避免每个文件再发起一次 SELECT 查询
     existing_paths = {r["path"] for r in conn.execute("SELECT path FROM songs")}
-    # 已登记过的原始源路径：重扫同一目录时据此跳过，避免反复复制出 "xxx (1).mp3" 并重复入库
+    # 已登记过的原始源路径 → 其 music 副本路径：重扫时复用副本而非再次复制
     existing_sources = {
-        r["source_path"]
-        for r in conn.execute("SELECT source_path FROM songs WHERE source_path IS NOT NULL")
+        r["source_path"]: r["path"]
+        for r in conn.execute(
+            "SELECT source_path, path FROM songs WHERE source_path IS NOT NULL"
+        )
     }
+    # 兼容旧库（无 source_path）：用「文件名 + 文件大小」兜底识别"源文件已复制过"
+    existing_meta: dict[tuple, str] = {}
+    for r in conn.execute("SELECT id, path FROM songs"):
+        try:
+            p = Path(r["path"])
+            existing_meta[(p.name, p.stat().st_size)] = r["path"]
+        except OSError:
+            pass
     try:
         for i, file in enumerate(files, 1):
             source_key = str(file.resolve())
-            if source_key in existing_sources:
-                if on_progress:
-                    on_progress(i, total, str(file))
-                continue
+            src_size = None
+            try:
+                src_size = file.stat().st_size
+            except OSError:
+                pass
             fail: Optional[dict] = None
             try:
-                stored = _store_copy(file, music)
+                # 已登记过：复用已有 music 副本（走下方 ON CONFLICT 刷新元数据），避免再复制出 "(1)"
+                existing_path = existing_sources.get(source_key)
+                if existing_path is None and src_size is not None:
+                    existing_path = existing_meta.get((file.name, src_size))
+                stored = Path(existing_path) if existing_path else _store_copy(file, music)
                 meta = metadata_parser.parse(stored)
                 cover = meta.pop("cover", None)
                 stored_path = str(stored)
                 is_new = stored_path not in existing_paths
                 existing_paths.add(stored_path)
-                existing_sources.add(source_key)
+                existing_sources[source_key] = stored_path
                 cur = conn.execute(
                     "INSERT INTO songs(path, title, artist, album, duration, cover, lyrics, "
                     "sample_rate, bitrate, channels, format, source_path) "
