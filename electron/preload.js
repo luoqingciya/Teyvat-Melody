@@ -10,7 +10,7 @@ const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 const WIN_OPS = ["minimize", "toggleMaximize", "close", "show"];
 
 // 其余方法 → Flask /api/rpc（与 app.py_api.Api 公开方法对应）
-const RPC_METHODS = ["hello", "scanLibrary", "saveFont", "removeFont"];
+const RPC_METHODS = ["saveFont", "removeFont"];
 
 // 把参数转成结构化克隆可安全传输的普通值：
 // Electron IPC 用 structured clone，Vue reactive 代理对象无法克隆，须先 JSON 序列化。

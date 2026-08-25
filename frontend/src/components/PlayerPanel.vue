@@ -15,7 +15,7 @@
         <span class="player-info__artist">{{ player.currentSong?.artist || t("player.selectSong") }}</span>
       </div>
 
-      <!-- 歌词面板（Phase 5 LRC 滚动高亮） -->
+      <!-- 歌词面板（LRC 滚动高亮） -->
       <LyricsPanel class="player-panel__lyrics" :lines="lines" :current-time="player.progress" :offset="config.lyricOffset" />
     </GlassCard>
   </aside>

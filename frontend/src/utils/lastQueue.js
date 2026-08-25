@@ -6,7 +6,7 @@ export function saveLastQueue(snapshot) {
   if (!snapshot || !snapshot.queueIds || !snapshot.queueIds.length) return;
   try {
     localStorage.setItem(KEY, JSON.stringify(snapshot));
-  } catch (_) {
+  } catch {
     /* ignore quota / 序列化失败 */
   }
 }
@@ -15,7 +15,7 @@ export function loadLastQueue() {
   try {
     const raw = localStorage.getItem(KEY);
     return raw ? JSON.parse(raw) : null;
-  } catch (_) {
+  } catch {
     return null;
   }
 }

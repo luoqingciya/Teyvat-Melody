@@ -1,4 +1,4 @@
-// useApi：封装后端 REST 接口。pywebview 环境下优先走 bridge，否则降级 fetch。
+// useApi：封装后端 REST 接口。渲染进程由 Flask 同源托管，直接 fetch 请求即可。
 function jget(url) {
   return fetch(url).then((r) => (r.status === 404 ? Promise.resolve(null) : r.json()));
 }
@@ -24,19 +24,7 @@ function jdel(url) {
 }
 
 export function useApi() {
-  const bridge = window.pywebview?.api ?? null;
-
-  // 后端联通性自检
-  function hello() {
-    if (bridge?.hello) return bridge.hello();
-    return fetch("/api/hello").then((r) => r.json()).then((res) => res.data);
-  }
-
   // 音乐库
-  function scanLibrary(path) {
-    if (bridge?.scanLibrary) return bridge.scanLibrary(path);
-    return jpost("/api/scan", { path }).then((res) => res.data);
-  }
   function startScan(path) {
     return jpost("/api/scan/start", { path }).then((res) => res.data);
   }
@@ -73,9 +61,6 @@ export function useApi() {
   function recordPlay(songId) {
     return jpost(`/api/songs/${songId}/play`);
   }
-  function getPlaybackHistory(limit = 100) {
-    return jget(`/api/playback/history?limit=${limit}`);
-  }
   function getPlaybackStats(days = 30) {
     return jget(`/api/playback/stats?days=${days}`);
   }
@@ -87,20 +72,11 @@ export function useApi() {
   function createPlaylist(name) {
     return jpost("/api/playlists", { name });
   }
-  function renamePlaylist(id, name) {
-    return jput(`/api/playlists/${id}`, { name });
-  }
   function deletePlaylist(id) {
     return jdel(`/api/playlists/${id}`);
   }
   function getPlaylistSongs(id) {
     return jget(`/api/playlists/${id}/songs`);
-  }
-  function setPlaylistSongs(id, songIds) {
-    return jput(`/api/playlists/${id}/songs`, { song_ids: songIds });
-  }
-  function addPlaylistSong(id, songId) {
-    return jpost(`/api/playlists/${id}/songs`, { song_id: songId });
   }
   function exportPlaylist(id) {
     return jget(`/api/playlists/${id}/export`);
@@ -110,8 +86,6 @@ export function useApi() {
   }
 
   return {
-    hello,
-    scanLibrary,
     startScan,
     getScanStatus,
     selectFolder,
@@ -123,15 +97,11 @@ export function useApi() {
     updateLyrics,
     getDuplicates,
     recordPlay,
-    getPlaybackHistory,
     getPlaybackStats,
     loadPlaylists,
     createPlaylist,
-    renamePlaylist,
     deletePlaylist,
     getPlaylistSongs,
-    setPlaylistSongs,
-    addPlaylistSong,
     exportPlaylist,
     importPlaylist,
   };

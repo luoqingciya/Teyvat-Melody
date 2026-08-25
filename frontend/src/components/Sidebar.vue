@@ -70,7 +70,6 @@
 
 <script setup>
 import { ref, onBeforeUnmount } from "vue";
-import NavItem from "./NavItem.vue";
 import { useApi } from "@/composables/useApi";
 import { useConfigStore } from "@/stores/config";
 import { useLibraryStore } from "@/stores/library";

@@ -3,7 +3,7 @@
     <div ref="viewport" class="lyrics-panel__viewport">
       <div
         class="lyrics-panel__track"
-        :style="{ transform: `translateY(${offset}px)` }"
+        :style="{ transform: `translateY(${scrollOffset}px)` }"
       >
         <div
           v-for="(row, i) in rows"
@@ -72,7 +72,7 @@ const activeIndex = computed(() => {
   return idx;
 });
 
-const offset = computed(() => {
+const scrollOffset = computed(() => {
   const safe = Math.max(0, activeIndex.value);
   return viewportHeight.value / 2 - (safe * LINE_HEIGHT + LINE_HEIGHT / 2);
 });

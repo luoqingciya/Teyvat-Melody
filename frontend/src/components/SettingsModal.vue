@@ -14,7 +14,7 @@
 
         <label class="settings__row">
           <span>{{ t("settings.playMode") }}</span>
-          <select v-model="config.playMode" class="settings__select ui-select" @change="applyPlayMode">
+          <select v-model="player.playMode" class="settings__select ui-select">
             <option value="list">{{ t("settings.modeList") }}</option>
             <option value="single">{{ t("settings.modeSingle") }}</option>
             <option value="shuffle">{{ t("settings.modeShuffle") }}</option>
@@ -436,9 +436,6 @@ function removeFont(f) {
   }
 }
 
-function applyPlayMode() {
-  player.playMode = config.playMode;
-}
 function applyPlaybackRate() {
   player.setPlaybackRate(config.playbackRate);
 }
@@ -449,7 +446,7 @@ function resetSettings() {
   config.resetDefaults();
   player.setVolume(config.volume);
   player.setPlaybackRate(config.playbackRate);
-  player.playMode = config.playMode;
+  player.playMode = "list";
 }
 </script>
 

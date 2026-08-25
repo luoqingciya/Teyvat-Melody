@@ -9,14 +9,12 @@ export const useConfigStore = defineStore("config", {
     language: "zh", // 界面语言：zh 中文 / en English
     recentSongs: [],
     // ---- 自定义设置 ----
-    playMode: "list", // 默认播放模式：list 列表循环 / single 单曲循环 / shuffle 随机
     volume: 0.8, // 默认音量（0~1）
     autoplayNext: true, // 播完自动切下一首
     startupResume: false, // 启动时自动继续播放最近一首
     resumeQueue: true, // 启动时恢复上次播放队列与当前位置（需 startupResume 开启才自动播放）
     playbackRate: 1, // 播放速度（0.5/0.75/1/1.25/1.5/2），默认 1 倍速
     glassFx: true, // 整体玻璃（毛玻璃）质感开关
-    hidePlaylistBanners: false, // 预留
     // ---- 全屏播放页字体 ----
     fsFontFamily: "", // 空表示跟随系统默认（或界面字体）
     fsFontSize: 16, // 歌词基准字号（px）
@@ -123,14 +121,12 @@ export const useConfigStore = defineStore("config", {
       const d = {
         theme: "mondstadt",
         language: "zh",
-        playMode: "list",
         volume: 0.8,
         autoplayNext: true,
         startupResume: false,
         resumeQueue: true,
         playbackRate: 1,
         glassFx: true,
-        hidePlaylistBanners: false,
         fsFontFamily: "",
         fsFontSize: 16,
         dlTextColor: "#FFFFFF",

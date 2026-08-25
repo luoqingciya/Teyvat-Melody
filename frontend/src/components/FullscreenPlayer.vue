@@ -260,7 +260,6 @@ function qualityLabel(song) {
 }
 .fs-lyrics :deep(.lyrics-line) {
   font-size: 1em;
-  line-height: 1.7;
   height: 2.9em;
   line-height: 2.9em;
 }

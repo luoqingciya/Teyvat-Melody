@@ -14,7 +14,7 @@ export function piniaPersist({ store, options }) {
   try {
     const saved = localStorage.getItem(key);
     if (saved) store.$patch(JSON.parse(saved));
-  } catch (e) {
+  } catch {
     // 忽略损坏的缓存
   }
 
@@ -23,7 +23,7 @@ export function piniaPersist({ store, options }) {
     (_mutation, state) => {
       try {
         localStorage.setItem(key, JSON.stringify(pick(state)));
-      } catch (e) {
+      } catch {
         // 忽略配额等错误
       }
     },

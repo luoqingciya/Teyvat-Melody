@@ -144,7 +144,7 @@ export const usePlayerStore = defineStore("player", {
       try {
         const res = await useApi().getLyrics(id);
         this.lyrics = res?.data?.lines ?? [];
-      } catch (e) {
+      } catch {
         this.lyrics = [];
       } finally {
         this.lyricLoading = false;
@@ -288,7 +288,7 @@ export const usePlayerStore = defineStore("player", {
       if (api && typeof api.setFullscreen === "function") {
         try {
           api.setFullscreen(!!v);
-        } catch (_) {
+        } catch {
           /* 纯浏览器环境忽略 */
         }
       }

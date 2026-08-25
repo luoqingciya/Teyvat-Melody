@@ -113,8 +113,7 @@ onMounted(async () => {
   config.applyUiPrefs();
   // 构建音效链路（透明）并应用已保存的均衡器/预设状态
   config.pushAudioFx();
-  // 应用设置面板里的默认播放模式、音量与语速
-  player.playMode = config.playMode || player.playMode;
+  // 应用设置面板里的音量与语速（播放模式由 player store 自行持久化，避免双数据源覆盖）
   player.setVolume(config.volume ?? player.volume);
   player.setPlaybackRate(config.playbackRate ?? 1);
   initStardust();
@@ -242,7 +241,7 @@ onBeforeUnmount(() => {
   delete window.__setDlFontSize;
 });
 
-// ---- 全局快捷键（Phase 5） ----
+// ---- 全局快捷键 ----
 const EDITABLE = ["INPUT", "TEXTAREA"];
 
 function isEditable(target) {
