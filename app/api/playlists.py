@@ -54,7 +54,11 @@ def update_playlist_songs(playlist_id: int):
     """批量设置歌单内歌曲顺序（整体替换）。"""
     data = request.get_json(silent=True) or {}
     song_ids = data.get("song_ids") or []
-    return ok(playlist_service.set_playlist_songs(playlist_id, [int(s) for s in song_ids]))
+    try:
+        ids = [int(s) for s in song_ids if s is not None and str(s).strip() not in ("", "None")]
+    except (TypeError, ValueError):
+        return fail("invalid song_ids")
+    return ok(playlist_service.set_playlist_songs(playlist_id, ids))
 
 
 @bp.post("/playlists/<int:playlist_id>/songs")
@@ -62,9 +66,13 @@ def add_playlist_song(playlist_id: int):
     """向歌单追加一首歌。"""
     data = request.get_json(silent=True) or {}
     song_id = data.get("song_id")
-    if not song_id:
+    if song_id is None or str(song_id).strip() in ("", "None"):
         return fail("song_id is required")
-    added = playlist_service.add_song_to_playlist(playlist_id, int(song_id))
+    try:
+        sid = int(song_id)
+    except (TypeError, ValueError):
+        return fail("invalid song_id")
+    added = playlist_service.add_song_to_playlist(playlist_id, sid)
     return ok({"added": added})
 
 

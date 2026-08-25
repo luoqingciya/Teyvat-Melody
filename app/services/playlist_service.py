@@ -8,6 +8,7 @@ from app.models import database as db
 
 SONG_JOIN_COLS = (
     "s.id, s.path, s.title, s.artist, s.album, s.duration, s.favorite, "
+    "s.sample_rate, s.bitrate, s.channels, s.format, "
     "s.cover IS NOT NULL AS has_cover"
 )
 
@@ -66,11 +67,14 @@ def get_playlist_songs(playlist_id: int) -> list[dict]:
 
 def set_playlist_songs(playlist_id: int, song_ids: list[int]) -> list[dict]:
     """以给定顺序整体替换歌单内容。"""
+    # 仅保留库中真实存在的歌曲，避免非法 song_id 触发外键异常让整单回滚/返回 500
+    existing_ids = {r["id"] for r in db.fetch_all("SELECT id FROM songs")}
+    valid = [sid for sid in song_ids if sid in existing_ids]
     with db.get_conn() as conn:
         conn.execute("DELETE FROM playlist_songs WHERE playlist_id = ?", (playlist_id,))
         conn.executemany(
             "INSERT INTO playlist_songs(playlist_id, song_id, position) VALUES (?, ?, ?)",
-            [(playlist_id, sid, pos) for pos, sid in enumerate(song_ids)],
+            [(playlist_id, sid, pos) for pos, sid in enumerate(valid)],
         )
         conn.commit()
     return get_playlist_songs(playlist_id)
@@ -78,6 +82,8 @@ def set_playlist_songs(playlist_id: int, song_ids: list[int]) -> list[dict]:
 
 def add_song_to_playlist(playlist_id: int, song_id: int) -> bool:
     """向歌单追加一首歌（已存在则忽略）。"""
+    if not db.fetch_one("SELECT 1 FROM songs WHERE id = ?", (song_id,)):
+        return False
     exists = db.fetch_one(
         "SELECT 1 FROM playlist_songs WHERE playlist_id = ? AND song_id = ?",
         (playlist_id, song_id),

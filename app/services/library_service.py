@@ -6,6 +6,7 @@ Phase 4 起由 SQLite（app.models.database）提供持久化存储，
 """
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -37,7 +38,24 @@ def get_scan_status(scan_id: str) -> Optional[dict]:
     """按 id 获取扫描进度；不存在返回 None。"""
     with _scan_lock:
         st = _scan_jobs.get(scan_id)
-        return dict(st) if st else None
+        if st is None:
+            return None
+        out = dict(st)
+        out.pop("_ts", None)
+    _prune_scan_jobs()  # 顺带清理旧任务
+    return out
+
+
+def _prune_scan_jobs() -> None:
+    """清理已完成超 1 小时的扫描任务，避免 _scan_jobs 无限增长。"""
+    now = time.time()
+    with _scan_lock:
+        for k in [
+            k
+            for k, v in _scan_jobs.items()
+            if v.get("finished") and now - v.get("_ts", 0) > 3600
+        ]:
+            _scan_jobs.pop(k, None)
 
 
 def start_scan(root: Path) -> str:
@@ -52,7 +70,9 @@ def start_scan(root: Path) -> str:
         "current": "",
         "added": 0,
         "failed": [],
+        "_ts": time.time(),
     }
+    _prune_scan_jobs()
     threading.Thread(target=_scan_worker, args=(scan_id, str(root)), daemon=True).start()
     return scan_id
 
@@ -94,8 +114,18 @@ def scan_and_register(
     music = paths.music_dir()
     # 一次性读取已有 path 集合，避免每个文件再发起一次 SELECT 查询
     existing_paths = {r["path"] for r in conn.execute("SELECT path FROM songs")}
+    # 已登记过的原始源路径：重扫同一目录时据此跳过，避免反复复制出 "xxx (1).mp3" 并重复入库
+    existing_sources = {
+        r["source_path"]
+        for r in conn.execute("SELECT source_path FROM songs WHERE source_path IS NOT NULL")
+    }
     try:
         for i, file in enumerate(files, 1):
+            source_key = str(file.resolve())
+            if source_key in existing_sources:
+                if on_progress:
+                    on_progress(i, total, str(file))
+                continue
             fail: Optional[dict] = None
             try:
                 stored = _store_copy(file, music)
@@ -104,15 +134,17 @@ def scan_and_register(
                 stored_path = str(stored)
                 is_new = stored_path not in existing_paths
                 existing_paths.add(stored_path)
+                existing_sources.add(source_key)
                 cur = conn.execute(
                     "INSERT INTO songs(path, title, artist, album, duration, cover, lyrics, "
-                    "sample_rate, bitrate, channels, format) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "sample_rate, bitrate, channels, format, source_path) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(path) DO UPDATE SET "
                     "title=excluded.title, artist=excluded.artist, album=excluded.album, "
                     "duration=excluded.duration, cover=excluded.cover, lyrics=excluded.lyrics, "
                     "sample_rate=excluded.sample_rate, bitrate=excluded.bitrate, "
-                    "channels=excluded.channels, format=excluded.format",
+                    "channels=excluded.channels, format=excluded.format, "
+                    "source_path=excluded.source_path",
                     (
                         str(stored),
                         meta["title"],
@@ -125,6 +157,7 @@ def scan_and_register(
                         meta.get("bitrate", 0),
                         meta.get("channels", 0),
                         meta.get("format", ""),
+                        source_key,
                     ),
                 )
                 if is_new:
@@ -158,6 +191,13 @@ def _store_copy(src: Path, dest_dir: Path) -> Path:
         counter += 1
     try:
         shutil.copy2(src, dest)
+        # 同步复制源目录同名的 .lrc 歌词（若存在），保证外挂歌词随复制入库后仍能被找到
+        src_lrc = src.with_suffix(".lrc")
+        if src_lrc.is_file():
+            try:
+                shutil.copy2(src_lrc, dest.with_suffix(".lrc"))
+            except OSError:
+                pass
         return dest
     except OSError:
         return src
@@ -268,14 +308,22 @@ def set_song_lyrics(song_id: int, text: str) -> Optional[dict]:
     path = get_song_path(song_id)
     if not path:
         return None
+    value = (text or "").strip() or None
     try:
         lrc_path = Path(path).with_suffix(".lrc")
-        if text and text.strip():
-            lrc_path.write_text(text, encoding="utf-8")
-        db.execute("UPDATE songs SET lyrics = ? WHERE id = ?", (text or None, song_id))
+        if value:
+            lrc_path.write_text(value, encoding="utf-8")
+        else:
+            # 清空歌词：只删除应用自己管理的 music 歌词副本，避免误删用户源目录里的 .lrc
+            try:
+                if lrc_path.is_file() and lrc_path.parent.resolve() == paths.music_dir().resolve():
+                    lrc_path.unlink()
+            except OSError:
+                pass
+        db.execute("UPDATE songs SET lyrics = ? WHERE id = ?", (value, song_id))
     except OSError:
         # 写文件失败不阻断：仍更新数据库字段（用户编辑值可得保留）
-        db.execute("UPDATE songs SET lyrics = ? WHERE id = ?", (text or None, song_id))
+        db.execute("UPDATE songs SET lyrics = ? WHERE id = ?", (value, song_id))
     return get_song(song_id)
 
 
@@ -331,7 +379,7 @@ def record_play(song_id: int) -> None:
 def get_playback_history(limit: int = 100) -> list[dict]:
     """返回最近播放历史（附歌曲信息），按时间倒序。"""
     rows = db.fetch_all(
-        f"SELECT ph.id, ph.played_at, {db.SONG_COLS} "
+        f"SELECT ph.id AS history_id, ph.played_at, {db.SONG_COLS_Q} "
         "FROM playback_history ph JOIN songs s ON s.id = ph.song_id "
         "ORDER BY ph.id DESC LIMIT ?",
         (max(1, int(limit)),),

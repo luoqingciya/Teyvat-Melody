@@ -26,6 +26,14 @@ SONG_COLS = (
     "cover IS NOT NULL AS has_cover"
 )
 
+# 带表别名 s. 的版本：用于 JOIN songs 的查询，避免裸列名（如 id）在两表同时存在时
+# 触发 SQLite 的 "ambiguous column name" 错误。
+SONG_COLS_Q = (
+    "s.id, s.path, s.title, s.artist, s.album, s.duration, s.favorite, "
+    "s.sample_rate, s.bitrate, s.channels, s.format, "
+    "s.cover IS NOT NULL AS has_cover"
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS songs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +48,8 @@ CREATE TABLE IF NOT EXISTS songs (
   sample_rate INTEGER NOT NULL DEFAULT 0,
   bitrate     INTEGER NOT NULL DEFAULT 0,
   channels    INTEGER NOT NULL DEFAULT 0,
-  format      TEXT    NOT NULL DEFAULT ''
+  format      TEXT    NOT NULL DEFAULT '',
+  source_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS playlists (
@@ -95,6 +104,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE songs ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE songs ADD COLUMN channels INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE songs ADD COLUMN format TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE songs ADD COLUMN source_path TEXT",
     ):
         try:
             conn.execute(ddl)
