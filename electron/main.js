@@ -33,7 +33,13 @@ function dataRoot() {
 
 let backendProc = null;
 let mainWindow = null;
-let launchBounds = null; // 启动时的窗口边界（居中大窗口），作为还原兜底
+// 窗口姿态自管理模式（只用 setBounds，不用原生最大化/全屏/kiosk）。
+// - 'windowed'   : 窗口化（启动时的居中大窗口；拖动后更新），是还原的唯一基准
+// - 'maximized'  : 铺满工作区（任务栏仍可见）
+// - 'fullscreen' : 沉浸播放（从最大化进入），铺满整块显示器（任务栏被遮挡）
+let windowMode = "windowed";
+let windowedBounds = null;   // 窗口化边界（启动居中大窗口；拖动后更新），作为还原的无污染基准
+let fsPrevMode = "windowed"; // 进入沉浸全屏前的姿态（'windowed' | 'maximized'），退出时据此还原
 let lyricsWindow = null;
 let miniWindow = null;
 let tray = null;
@@ -194,8 +200,8 @@ function createMainWindow() {
       nodeIntegration: false,
     },
   });
-  // 记录启动时真实窗口边界（含 DWM 边框微调），作为窗口化还原的兜底
-  launchBounds = mainWindow.getBounds();
+  // 记录启动时真实窗口边界（含 DWM 边框微调），作为窗口化还原的唯一基准
+  windowedBounds = mainWindow.getBounds();
   // 先加载本地加载页，窗口立即可见；后端就绪后再跳转 SPA（见 whenReady）
   mainWindow.loadFile(path.join(__dirname, "loading.html"));
   // 外部链接用系统浏览器打开
@@ -383,50 +389,75 @@ ipcMain.handle("win:op", (_e, { op }) => {
   if (!mainWindow) return { ok: false };
   if (op === "minimize") mainWindow.minimize();
   else if (op === "toggleMaximize") {
-    if (mainWindow.isMaximized()) {
-      // 还原到窗口化：无论 OS 的还原边界被竞态污染成什么样，都吸附到启动时的居中大窗口，
-      // 彻底避免出现偏小/靠左上角的窗口。
-      mainWindow.unmaximize();
-      const target = clampToScreen(launchBounds);
-      if (target) mainWindow.setBounds(target);
+    if (windowMode === "maximized") {
+      // 还原到窗口化：回到最后一次窗口化边界（居中大窗口），不自依赖 OS 还原状态
+      const target = clampToScreen(windowedBounds);
+      if (target) applyBounds(target);
+      windowMode = "windowed";
+    } else if (windowMode === "fullscreen") {
+      // 沉浸全屏中点“最大化/还原”（正常情况下标题栏被覆盖层遮挡不会触发）：
+      // 当作退出沉浸并回到窗口化
+      fsPrevMode = "windowed";
+      mainWindow.setAlwaysOnTop(false); // 退出沉浸，取消置顶
+      const target = clampToScreen(windowedBounds);
+      if (target) applyBounds(target);
+      windowMode = "windowed";
+    } else {
+      // 窗口化 → 最大化：铺满工作区（任务栏仍可见）
+      applyBounds(curDisplay().workArea);
+      windowMode = "maximized";
     }
-    else mainWindow.maximize();
   } else if (op === "close") mainWindow.hide(); // 关闭 = 最小化到托盘
   else if (op === "show") { mainWindow.show(); mainWindow.focus(); }
   return { ok: true };
 });
 
-// 沉浸全屏：进入/退出原生全屏以覆盖任务栏。
-// 注意：前端 FullscreenPlayer 只是 Vue 覆盖层（position:fixed; inset:0），不会覆盖任务栏；
-// 真正屏蔽任务栏需要窗口在系统层面进入原生全屏。对 frame:false + thickFrame:false 的无边框窗口，
-// setFullScreen(true) 在部分 Windows 环境只把窗口放到工作区大小（任务栏仍可见），故改用 setKiosk。
-//
+// 沉浸全屏（沉浸播放）：进入/退出时的窗口姿态，统统用 setBounds 显式管理，不用原生最大化/全屏/kiosk。
+// 根因：frame:false + thickFrame:false 的无边框窗口在 Windows 上没有 WS_THICKFRAME，原生
+// maximize()/unmaximize()/getNormalBounds()/setKiosk() 都不可靠（尤其 setKiosk(true) 后 isKiosk()
+// 仍返回 false，并未真正进入系统全屏；退出时还会把 OS 的"还原边界"污染成偏小/靠左上角的畸形窗口，
+// 表现为沉浸退出后窗口变小、或只在隐藏/显示任务栏之间切换）。
+// 方案：setBounds 铺满整块显示器即可盖住任务栏（无边框窗口实测有效），且不污染 OS 还原边界，
+// 退出时 setBounds 回来即回到干净尺寸，从根上杜绝小窗口 / 左上角 / 只在任务栏间切换。
 // 预期行为（与前端交互约定）：
-//  - 普通（未最大化）窗口进入沉浸播放：只由前端覆盖层呈现沉浸视图，保持窗口尺寸不变；
-//  - 最大化窗口进入沉浸播放：真正占满整块显示器并隐藏任务栏（先在普通态再进 kiosk，否则 Windows
-//    不会从最大化直接切到覆盖任务栏的全屏，表现就是"占满但任务栏仍在"）。
-let wasMaximizedBeforeFs = false;
-// 进入全屏（由最大化进入）前的“正常/还原”边界：退出时据此还原为居中大窗口，
-// 避免 unmaximize + setKiosk 的竞态把还原边界污染成“小窗口 / 靠左上角”。
-let fsRestoreBounds = null;
-// 记录当前是否处于"沉浸全屏"（进入全屏的意图状态）。关键点：对 frame:false + thickFrame:false 的无边框
-// 窗口，Windows 下 setKiosk(true) 后 isKiosk() 仍可能返回 false，因此不能只用 isKiosk()/isFullScreen()
-// 作为守卫依据，须用自维护标志让拖拽/窗口控制保持可靠。
-let nativeFullscreen = false;
-// 校验并修正还原边界：小于最小尺寸或跑到屏幕外的"畸形"边界，直接回退到启动时的居中大窗口；
-// 否则仅把位置收紧到工作区（DWM/竞态所致的小窗口/左上角由此被兜底修复）。
+//  - 窗口化进入沉浸：只由前端 Vue 覆盖层呈现沉浸视图，保持窗口尺寸不变（不遮任务栏）；
+//  - 最大化进入沉浸：铺满整块显示器并隐藏任务栏；退出后回到最大化。
+
+// 当前窗口所在显示器（跟随窗口位置，支持多显示器 / DPI 变化）。
+function curDisplay() {
+  const { screen } = require("electron");
+  if (!mainWindow || mainWindow.isDestroyed()) return screen.getPrimaryDisplay();
+  try {
+    return screen.getDisplayMatching(mainWindow.getBounds());
+  } catch (_) {
+    return screen.getPrimaryDisplay();
+  }
+}
+
+// 把窗口边界应用到目标值。若窗口被系统原生最大化（例如用户按 Win+↑ 快捷键），
+// setBounds 会被系统忽略，须先取消原生最大化再 setBounds；即使原生"还原边界"被污染，
+// 之后的目标边界也会把它覆盖，因此不会出现小窗口/左上角。
+function applyBounds(bounds) {
+  if (!mainWindow || mainWindow.isDestroyed() || !bounds) return;
+  try {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  } catch (_) {}
+  mainWindow.setBounds(bounds);
+}
+
+// 校验并修正一块"窗口化/还原"边界：小于最小尺寸或跑到屏幕外的畸形边界 → 回退到 windowedBounds
+// （启动居中大窗口，永远合法）；否则仅把位置收紧到所在显示器工作区。
 function clampToScreen(bounds) {
-  const cur = bounds || launchBounds;
+  const cur = bounds || windowedBounds;
   if (!cur || !mainWindow || mainWindow.isDestroyed()) return cur || null;
   const [minW, minH] = mainWindow.getMinimumSize();
-  const { screen } = require("electron");
-  const wa = screen.getPrimaryDisplay().workArea;
+  const wa = curDisplay().workArea;
   const w = Math.round(cur.width);
   const h = Math.round(cur.height);
   const x = Math.round(cur.x);
   const y = Math.round(cur.y);
   if (!(w >= minW && h >= minH)) {
-    return launchBounds ? { ...launchBounds } : { x, y, width: w, height: h };
+    return windowedBounds ? { ...windowedBounds } : { x, y, width: w, height: h };
   }
   const cw = Math.max(w, minW);
   const ch = Math.max(h, minH);
@@ -434,42 +465,36 @@ function clampToScreen(bounds) {
   const cy = Math.min(Math.max(y, wa.y), wa.y + Math.max(0, wa.height - ch));
   return { x: cx, y: cy, width: cw, height: ch };
 }
+
 ipcMain.handle("win:fullscreen", (_e, { flag }) => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
   const wantFs = !!flag;
 
   if (wantFs) {
-    // 已是沉浸全屏：无需重复处理
-    if (nativeFullscreen || mainWindow.isKiosk() || mainWindow.isFullScreen()) return { ok: true };
-    if (mainWindow.isMaximized()) {
-      // 从最大化 state 直接 setKiosk 不会隐藏任务栏（窗口仍按最大化/工作区处理），
-      // 先还原成普通窗口再进入 kiosk，kiosk 会强制窗口覆盖整块显示器并遮蔽任务栏。
-      wasMaximizedBeforeFs = true;
-      fsRestoreBounds = clampToScreen(launchBounds);
-      mainWindow.unmaximize();
-      if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
-      mainWindow.setKiosk(true);
+    if (windowMode === "fullscreen") return { ok: true }; // 已是沉浸全屏
+    fsPrevMode = windowMode; // 记录进入前的姿态（'windowed' | 'maximized'）
+    if (windowMode === "maximized") {
+      // 从最大化进入沉浸：铺满整块显示器（含任务栏区域），setBounds 即可盖住任务栏
+      applyBounds(curDisplay().bounds);
+      mainWindow.setAlwaysOnTop(true); // 保证盖住任务栏（即使任务栏被设为保持置顶）
+      windowMode = "fullscreen";
     }
-    // 普通窗口：不进入原生全屏，保持窗口大小不变（沉浸视图由前端覆盖层呈现）。
-    nativeFullscreen = true;
+    // 窗口化进入沉浸：保持窗口尺寸不变，沉浸视图由前端覆盖层呈现（不遮任务栏）
   } else {
-    // 退出沉浸全屏：无条件清掉原生全屏/kiosk 态。
-    // 不能写成 if (isKiosk()) setKiosk(false)：该环境下 setKiosk(true) 后 isKiosk() 仍为 false，
-    // 用 isKiosk() 判断会跳过 setKiosk(false)，窗口残留 kiosk 全屏样式，导致随后点"窗口化/最大化"
-    // 只在隐藏、显示任务栏之间切换，无法回到普通窗口。
-    mainWindow.setKiosk(false);
-    mainWindow.setFullScreen(false);
-    // 进入前是最大化 → 退出后还原为最大化，尽量不丢失窗口状态
-    if (wasMaximizedBeforeFs) {
-      mainWindow.setResizable(true);
-      // 显式回到“进入前”的正常边界再最大化，确保之后的“窗口化”是居中大窗口而非小窗/左上角
-      const target = clampToScreen(launchBounds);
-      if (target) mainWindow.setBounds(target);
-      mainWindow.maximize();
+    if (windowMode === "fullscreen") {
+      mainWindow.setAlwaysOnTop(false); // 退出沉浸，取消置顶
+      if (fsPrevMode === "maximized") {
+        // 退出沉浸 → 回到最大化（铺满工作区，任务栏恢复可见）
+        applyBounds(curDisplay().workArea);
+        windowMode = "maximized";
+      } else {
+        // 退出沉浸 → 回到窗口化
+        const target = clampToScreen(windowedBounds);
+        if (target) applyBounds(target);
+        windowMode = "windowed";
+      }
     }
-    wasMaximizedBeforeFs = false;
-    fsRestoreBounds = null;
-    nativeFullscreen = false;
+    fsPrevMode = "windowed";
   }
   return { ok: true };
 });
@@ -480,12 +505,11 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
 let mainDragState = null;
 ipcMain.handle("win:drag-start", () => {
   if (!mainWindow || mainWindow.isDestroyed() || mainDragState) return { ok: false };
-  // 原生全屏 / 沉浸 kiosk / 最大化 下禁止拖动，避免窗口"向内变小"：
-  // - 全屏 / kiosk：getContentSize() 为整屏，用 setContentBounds 重设边界会让窗口从全屏向内收缩；
-  // - 最大化：若先 unmaximize 再拖拽，窗口会从铺满屏幕瞬间还原成较小的默认尺寸，同样表现为"变小"。
-  // 标题栏拖动只在普通（未最大化、非全屏）状态下生效；想移动最大化窗口时，先经标题栏"最大化/还原"
-  // 按钮还原为普通尺寸再拖拽即可。
-  if (nativeFullscreen || mainWindow.isFullScreen() || mainWindow.isKiosk() || mainWindow.isMaximized()) return { ok: false };
+  // 沉浸全屏 / 最大化 下禁止拖动，避免窗口"向内变小"：
+  // - 沉浸全屏：getContentSize() 为整屏，用 setContentBounds 重设边界会让窗口从全屏向内收缩；
+  // - 最大化：若先 unmaximize 再拖拽，窗口会从铺满屏幕瞬间还原成较小尺寸，同样表现为"变小"。
+  // 标题栏拖动只在窗口化状态下生效；想移动最大化窗口时，先经标题栏"最大化/还原"按钮还原再拖拽。
+  if (windowMode !== "windowed") return { ok: false };
   const { screen } = require("electron");
   const cursor = screen.getCursorScreenPoint();
   const [wx, wy] = mainWindow.getPosition();
@@ -507,9 +531,9 @@ ipcMain.handle("win:drag-start", () => {
       mainDragState = null;
       return;
     }
-    // 拖拽过程中若用户进入沉浸全屏（kiosk/原生全屏），立即中止拖拽，避免 setContentBounds
-    // 把全屏窗口重设为局部大小而产生"向内收缩"。
-    if (nativeFullscreen || mainWindow.isFullScreen() || mainWindow.isKiosk()) {
+    // 拖拽过程中若窗口已切到沉浸全屏/最大化，立即中止拖拽，避免 setContentBounds
+    // 把整屏窗口重设为局部大小而产生"向内收缩"。
+    if (windowMode !== "windowed") {
       clearInterval(mainDragState.timer);
       mainWindow.setResizable(mainDragState.wasResizable);
       mainWindow.setMaximizable(mainDragState.wasMaximizable);
@@ -537,6 +561,11 @@ ipcMain.handle("win:drag-end", () => {
     mainWindow.setResizable(mainDragState.wasResizable);
     mainWindow.setMaximizable(mainDragState.wasMaximizable);
     mainDragState = null;
+  }
+  // 拖动结束：记录最新的窗口化边界（拖动后的位置与尺寸），供最大化/沉浸还原回来时恢复到这里
+  if (mainWindow && !mainWindow.isDestroyed() && windowMode === "windowed") {
+    const b = mainWindow.getBounds();
+    windowedBounds = clampToScreen(b);
   }
   return { ok: true };
 });
