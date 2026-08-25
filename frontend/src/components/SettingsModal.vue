@@ -156,10 +156,10 @@
             <label class="settings__color">
               <span>{{ t("settings.accentCustom") }}</span>
               <input
-                v-model="config.accentColor"
                 type="color"
                 class="settings__colorpicker"
-                @input="config.setAccent(config.accentColor)"
+                :value="config.accentColor || defaultAccent"
+                @input="config.setAccent($event.target.value)"
               />
             </label>
             <button
@@ -356,6 +356,11 @@ const emit = defineEmits(["update:modelValue"]);
 const config = useConfigStore();
 const player = usePlayerStore();
 const { t } = useI18n();
+
+// 自定义主题主色未设置时，取色器需要一个合法的 #rrggbb 回退值。
+// 用当前主题的默认金色，避免把空字符串绑到 <input type="color"> 触发控制台告警。
+const THEME_GOLD = { mondstadt: "#FFD76B", liyue: "#E8B465", inazuma: "#C9A0FF" };
+const defaultAccent = computed(() => THEME_GOLD[config.theme] || "#FFD76B");
 
 const themes = [
   { key: "mondstadt", label: "蒙德", icon: "anemo" },
