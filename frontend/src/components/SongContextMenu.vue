@@ -133,7 +133,7 @@ onBeforeUnmount(detachGlobalNow);
   padding: var(--space-2);
   border-radius: var(--radius-lg);
   border: 1px solid var(--teyvat-card-border);
-  background: color-mix(in srgb, var(--teyvat-card-bg) 100%, transparent);
+  background: color-mix(in srgb, var(--teyvat-card-bg) 24%, var(--teyvat-bg-dark) 76%);
   backdrop-filter: blur(var(--blur-overlay));
   box-shadow: var(--shadow-pop);
   user-select: none;
