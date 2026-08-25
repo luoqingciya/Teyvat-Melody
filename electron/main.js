@@ -384,11 +384,10 @@ ipcMain.handle("win:op", (_e, { op }) => {
   if (op === "minimize") mainWindow.minimize();
   else if (op === "toggleMaximize") {
     if (mainWindow.isMaximized()) {
-      // 还原到窗口化：先取“还原边界”，unmaximize 后立即吸附到合法边界，
-      // 避免 unmaximize 使用被竞态污染的还原尺寸，出现偏小/靠左上角的窗口。
-      const nb = mainWindow.getNormalBounds();
+      // 还原到窗口化：无论 OS 的还原边界被竞态污染成什么样，都吸附到启动时的居中大窗口，
+      // 彻底避免出现偏小/靠左上角的窗口。
       mainWindow.unmaximize();
-      const target = clampToScreen(nb);
+      const target = clampToScreen(launchBounds);
       if (target) mainWindow.setBounds(target);
     }
     else mainWindow.maximize();
@@ -446,7 +445,7 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
       // 从最大化 state 直接 setKiosk 不会隐藏任务栏（窗口仍按最大化/工作区处理），
       // 先还原成普通窗口再进入 kiosk，kiosk 会强制窗口覆盖整块显示器并遮蔽任务栏。
       wasMaximizedBeforeFs = true;
-      fsRestoreBounds = clampToScreen(mainWindow.getNormalBounds());
+      fsRestoreBounds = clampToScreen(launchBounds);
       mainWindow.unmaximize();
       if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
       mainWindow.setKiosk(true);
@@ -464,7 +463,7 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
     if (wasMaximizedBeforeFs) {
       mainWindow.setResizable(true);
       // 显式回到“进入前”的正常边界再最大化，确保之后的“窗口化”是居中大窗口而非小窗/左上角
-      const target = clampToScreen(fsRestoreBounds);
+      const target = clampToScreen(launchBounds);
       if (target) mainWindow.setBounds(target);
       mainWindow.maximize();
     }
