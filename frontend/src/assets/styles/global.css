@@ -1,0 +1,292 @@
+/* 提瓦特主题入口：默认(蒙德)为主题基础变量，其余主题以 [data-theme] 属性切换生效 */
+@import "./themes/mondstadt.css";
+@import "./themes/liyue.css";
+@import "./themes/inazuma.css";
+
+:root {
+  /* ============ 设计系统 Tokens ============ */
+  /* 间距刻度 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* 圆角刻度 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 999px;
+
+  /* 毛玻璃模糊层级 */
+  --blur-soft: 10px;
+  --blur-header: 14px;
+  --blur-card: 18px;
+  --blur-overlay: 22px;
+
+  /* 阴影层级 */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-card: 0 10px 34px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --shadow-glow: 0 0 0 1px color-mix(in srgb, var(--teyvat-gold) 30%, transparent),
+    0 8px 26px color-mix(in srgb, var(--teyvat-gold) 18%, transparent);
+
+  /* 动效 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.2, 1);
+  --t-fast: 0.15s ease;
+  --t-base: 0.22s ease;
+  --t-slow: 0.3s var(--ease-out);
+
+  /* 字体 */
+  --font-display: var(--app-font-family, "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif);
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-display);
+  font-size: var(--app-base-font-size, 14px);
+  font-weight: var(--font-weight-regular);
+  color: var(--teyvat-text-primary);
+  background: var(--teyvat-bg-dark);
+  /* 环境氛围：多层柔和辉光，营造提瓦特夜色纵深 */
+  background-image: var(--teyvat-ambient);
+  background-attachment: fixed;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  line-height: 1.5;
+}
+
+/* ---- 自定义滚动条（匹配主题） ---- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--teyvat-text-secondary) 36%, transparent);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--teyvat-gold);
+  background-clip: border-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ---- 应用骨架 ---- */
+.app-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.stardust-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 玻璃质感开关：关闭时统一移除所有面板的毛玻璃模糊（保留半透明底色以维持层次） */
+html.glass-off .sidebar,
+html.glass-off .the-header,
+html.glass-off .player-controls,
+html.glass-off .glass-card {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ============ 统一标题 ============ */
+.ui-heading {
+  font-size: 18px;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 2px;
+  color: var(--teyvat-text-primary);
+}
+
+/* ============ 统一表单控件 ============ */
+.ui-input,
+.ui-select {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: color-mix(in srgb, var(--teyvat-card-bg) 55%, transparent);
+  color: var(--teyvat-text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: var(--radius-md);
+  outline: none;
+  padding: 8px 12px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
+}
+.ui-input::placeholder {
+  color: color-mix(in srgb, var(--teyvat-text-secondary) 80%, transparent);
+}
+.ui-input:hover,
+.ui-select:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.ui-input:focus,
+.ui-select:focus {
+  border-color: var(--teyvat-gold);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--teyvat-gold) 20%, transparent);
+}
+.ui-select {
+  cursor: pointer;
+}
+.ui-select option {
+  background: var(--teyvat-bg-dark);
+  color: var(--teyvat-text-primary);
+}
+
+/* ============ 统一按钮 ============ */
+/* 主操作：渐变强调，深色文字 */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--teyvat-gold), var(--teyvat-gold-2));
+  color: #1a1424;
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  font-family: inherit;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: filter var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--teyvat-gold) 24%, transparent);
+}
+.ui-btn:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 7px 20px color-mix(in srgb, var(--teyvat-gold) 32%, transparent);
+}
+.ui-btn:active {
+  transform: translateY(0);
+}
+.ui-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 次级操作：玻璃面 + 细描边 */
+.ui-btn--ghost {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--teyvat-text-primary);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.ui-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+/* 危险操作：红色强调 */
+.ui-btn--danger {
+  background: rgba(229, 72, 77, 0.14);
+  color: var(--teyvat-danger);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--teyvat-danger) 40%, transparent);
+}
+.ui-btn--danger:hover {
+  background: rgba(229, 72, 77, 0.22);
+}
+
+/* 纯图标按钮（控制栏 / 窗口按钮等） */
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--teyvat-text-secondary);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), transform var(--t-fast);
+}
+.ui-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--teyvat-text-primary);
+}
+.ui-icon-btn:active {
+  transform: scale(0.94);
+}
+.ui-icon-btn.is-active {
+  color: var(--teyvat-gold);
+  background: color-mix(in srgb, var(--teyvat-gold) 14%, transparent);
+}
+
+/* ============ 播放行高亮 / 常用复用 ============ */
+.playlist-active-row {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--teyvat-gold) 16%, transparent), transparent);
+}
+
+/* ---- 响应式：窄窗口时收起右侧播放面板 / 折叠侧栏 ---- */
+@media (max-width: 1080px) {
+  .player-panel {
+    width: 256px !important;
+  }
+}
+@media (max-width: 920px) {
+  .player-panel {
+    display: none !important;
+  }
+  .main-layout > .main-content {
+    flex: 1 1 auto;
+  }
+}
+@media (max-width: 760px) {
+  .sidebar {
+    width: 64px !important;
+    padding: 14px 8px !important;
+  }
+  .sidebar .nav-item {
+    padding: 12px 0;
+    justify-content: center;
+    gap: 0;
+  }
+  .sidebar .nav-item__label,
+  .sidebar .sidebar__head span:not(.sidebar__head-icon),
+  .sidebar .sidebar__scan {
+    display: none !important;
+  }
+}

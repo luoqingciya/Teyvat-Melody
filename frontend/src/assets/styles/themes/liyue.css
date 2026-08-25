@@ -1,0 +1,20 @@
+/* 璃月主题 · 岩之契约与鎏金灯火（Geo） */
+:root[data-theme="liyue"] {
+  --teyvat-theme-name: "璃月";
+  --teyvat-gold: #E8B465;
+  --teyvat-gold-2: #C98A3D;
+  --teyvat-blue: #7FA7B8;
+  --teyvat-bg-dark: #14100C;
+  --teyvat-card-bg: rgba(45, 38, 28, 0.55);
+  --teyvat-card-border: rgba(255, 214, 150, 0.12);
+  --teyvat-card-border-top: rgba(255, 224, 164, 0.2);
+  --teyvat-text-primary: #F5E6C8;
+  --teyvat-text-secondary: #9A8A6A;
+  --teyvat-text-active: #FFE1A2;
+  --teyvat-danger: #E06666;
+  --teyvat-success: #79C084;
+
+  --teyvat-ambient: radial-gradient(1100px 760px at 76% -8%, rgba(232, 180, 101, 0.18), transparent 58%),
+    radial-gradient(900px 640px at -4% 104%, rgba(127, 167, 184, 0.14), transparent 56%),
+    radial-gradient(720px 520px at 50% 118%, rgba(232, 180, 101, 0.1), transparent 60%);
+}

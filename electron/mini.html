@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http://127.0.0.1:5000; img-src 'self' http://127.0.0.1:5000 data:; style-src 'self' 'unsafe-inline';" />
+  <title>提瓦特旋律 · 迷你播放器</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0A0E1A;
+      --card: #141A2C;
+      --gold: #ffd76b;
+      --text: #f2f4f8;
+      --sub: #8a91a5;
+      --border: rgba(255, 255, 255, 0.08);
+    }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: transparent;
+      color: var(--text);
+      overflow: hidden;
+      user-select: none;
+    }
+    .mini {
+      width: 360px;
+      height: 140px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px 14px;
+      display: flex;
+      gap: 12px;
+      -webkit-app-region: drag;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+    .mini__cover {
+      width: 84px;
+      height: 84px;
+      flex-shrink: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      background: linear-gradient(135deg, rgba(255, 215, 107, 0.2), rgba(77, 163, 255, 0.15));
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mini__cover img { width: 100%; height: 100%; object-fit: cover; }
+    .mini__cover .ph { color: var(--gold); opacity: 0.7; line-height: 1; }
+    .mini__main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .mini__info {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .mini__texts { min-width: 0; }
+    .mini__title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mini__artist {
+      font-size: 11px;
+      color: var(--sub);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+    .mini__close {
+      -webkit-app-region: no-drag;
+      border: none;
+      background: transparent;
+      color: var(--sub);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+    .mini__close:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+    .mini__progress {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--sub);
+      -webkit-app-region: no-drag;
+      margin-top: 2px;
+    }
+    .mini__bar {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.12);
+      cursor: pointer;
+      overflow: hidden;
+    }
+    .mini__bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--gold);
+      border-radius: 2px;
+      transition: width 0.2s linear;
+    }
+    .mini__ctrl {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      -webkit-app-region: no-drag;
+      margin-top: auto;
+    }
+    .mini__btn {
+      border: none;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mini__btn:hover { background: rgba(255, 255, 255, 0.1); }
+    .mini__btn--play {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--gold), #f5b942);
+      color: #1a1a1a;
+    }
+    .mini__btn--play:hover {
+      background: linear-gradient(135deg, #ffe08a, #f5b942);
+      transform: scale(1.04);
+    }
+    .mini__btn svg { width: 18px; height: 18px; }
+    .mini__btn--play svg { width: 20px; height: 20px; }
+  </style>
+</head>
+<body>
+  <div class="mini">
+    <div class="mini__cover">
+      <img id="cover" alt="" style="display:none" />
+      <div class="ph" id="coverPh">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+        </svg>
+      </div>
+    </div>
+    <div class="mini__main">
+      <div class="mini__info">
+        <div class="mini__texts">
+          <div class="mini__title" id="title">未在播放</div>
+          <div class="mini__artist" id="artist"></div>
+        </div>
+        <button class="mini__close" id="close" title="关闭迷你模式">×</button>
+      </div>
+      <div class="mini__progress">
+        <span id="cur">00:00</span>
+        <div class="mini__bar" id="bar"><div class="mini__bar-fill" id="barFill"></div></div>
+        <span id="dur">00:00</span>
+      </div>
+      <div class="mini__ctrl">
+        <button class="mini__btn" id="prev" title="上一曲">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </button>
+        <button class="mini__btn mini__btn--play" id="toggle" title="播放 / 暂停">
+          <svg id="iconPlay" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+          <svg id="iconPause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        </button>
+        <button class="mini__btn" id="next" title="下一曲">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let state = {};
+
+    function fmt(sec) {
+      sec = Math.max(0, Math.floor(Number(sec) || 0));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    }
+
+    function render(s) {
+      if (!s) return;
+      state = s;
+      $("title").textContent = s.title || "未在播放";
+      $("artist").textContent = s.artist || "";
+      const cover = $("cover");
+      if (s.cover) {
+        cover.src = s.cover;
+        cover.style.display = "block";
+        $("coverPh").style.display = "none";
+      } else {
+        cover.style.display = "none";
+        $("coverPh").style.display = "flex";
+      }
+      const playing = !!s.isPlaying;
+      $("iconPlay").style.display = playing ? "none" : "block";
+      $("iconPause").style.display = playing ? "block" : "none";
+      const pct = s.duration > 0 ? Math.min(100, (s.progress / s.duration) * 100) : 0;
+      $("barFill").style.width = pct + "%";
+      $("cur").textContent = fmt(s.progress);
+      $("dur").textContent = fmt(s.duration);
+    }
+
+    window.mini.onState(render);
+
+    $("toggle").addEventListener("click", () => window.mini.toggle());
+    $("prev").addEventListener("click", () => window.mini.prev());
+    $("next").addEventListener("click", () => window.mini.next());
+    $("close").addEventListener("click", () => window.mini.close());
+    $("bar").addEventListener("click", (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      if (state.duration > 0) window.mini.seek(ratio * state.duration);
+    });
+  </script>
+</body>
+</html>

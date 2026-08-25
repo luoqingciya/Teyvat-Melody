@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>桌面歌词</title>
+<style>
+  /* 横排桌面歌词：可切换 单行/双行/多行 + 整行/逐字卡拉OK + 进度条，仿 QQ/网易云桌面歌词条。
+     结构：顶部工具栏 | 主歌词行 | 副歌词行(1~N) | 进度条 */
+  html, body {
+    margin: 0; padding: 0;
+    overflow: hidden;
+    user-select: none;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  /* 默认全透明；card 模式由 JS 给 #card 加背景 */
+  body { background: transparent; }
+
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 10px 10px;
+  }
+
+  /* 歌词卡片 */
+  #card {
+    position: relative;
+    width: 100%; height: 100%;
+    border-radius: 20px;
+    box-sizing: border-box;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    transition: background 0.25s, box-shadow 0.25s;
+  }
+  body.bg-card #card {
+    background: linear-gradient(
+      135deg,
+      rgba(70, 58, 160, 0.62) 0%,
+      rgba(36, 28, 108, 0.55) 45%,
+      rgba(58, 46, 142, 0.60) 100%
+    );
+    backdrop-filter: blur(20px) saturate(1.25);
+    -webkit-backdrop-filter: blur(20px) saturate(1.25);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+
+  /* 拖动区：卡片整体可拖动，锁定后不可拖动 */
+  #drag {
+    position: absolute; inset: 0;
+    -webkit-app-region: drag;
+    z-index: 1;
+  }
+  body.locked #drag { -webkit-app-region: no-drag; }
+
+  /* 工具栏：常驻显示（仿 QQ/网易云桌面歌词卡片） */
+  #tools {
+    position: relative; z-index: 3;
+    height: 32px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 10px;
+  }
+  .tools-center, .tools-right {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tools-center { position: absolute; left: 50%; transform: translateX(-50%); gap: 14px; }
+  .tool-btn {
+    background: transparent; border: none; color: rgba(255,255,255,0.75);
+    cursor: pointer; padding: 4px; border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color 0.15s, background 0.15s;
+    -webkit-app-region: no-drag;
+  }
+  .tool-btn:hover { color: #fff; background: rgba(255,255,255,0.12); }
+  .tool-btn svg { fill: currentColor; }
+
+  /* 歌词区域 */
+  #lyrics {
+    position: relative; z-index: 2;
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 0 20px 16px;
+    text-align: center;
+  }
+  #main {
+    width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-weight: 700; letter-spacing: 0.5px;
+    line-height: 1.25;
+    color: var(--hl, #20D9D0);
+    text-shadow:
+      -1px -1px 0 rgba(0,0,0,0.55), 1px -1px 0 rgba(0,0,0,0.55),
+      -1px  1px 0 rgba(0,0,0,0.55), 1px  1px 0 rgba(0,0,0,0.55),
+      0 2px 8px rgba(0,0,0,0.35);
+  }
+  /* 逐字卡拉OK：已完成字符用高亮色，未完成用普通色 */
+  #main .k-done { color: var(--hl, #20D9D0); }
+  #main .k-pending {
+    color: color-mix(in srgb, var(--text, #fff) 55%, transparent);
+  }
+
+  /* 副歌词行：可 1 行（双行）或多行（多行模式） */
+  #subs {
+    width: 100%; margin-top: 4px;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  #subs .sub-line {
+    width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.3;
+    color: color-mix(in srgb, var(--text, #fff) 70%, transparent);
+  }
+
+  /* 进度条 */
+  #progress {
+    position: absolute; left: 14px; right: 14px; bottom: 8px;
+    height: 3px; z-index: 3;
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 3px; overflow: hidden;
+  }
+  #progress.hidden { display: none; }
+  #bar {
+    height: 100%; width: 0%;
+    background: var(--hl, #20D9D0);
+    border-radius: 3px;
+    transition: width 0.2s linear;
+  }
+
+  /* 换行动效：整块歌词轻微上移 + 淡入 */
+  #lyrics.line-in { animation: lineIn 0.32s ease; }
+  @keyframes lineIn {
+    from { opacity: 0.2; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* 空态 */
+  #main.empty { color: color-mix(in srgb, var(--text, #fff) 55%, transparent); }
+
+  /* 滚轮调字号提示（未锁定时短暂显示当前字号） */
+  #fontHint {
+    position: absolute; top: 38px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 4;
+    padding: 2px 12px; border-radius: 10px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff; font-size: 12px; white-space: nowrap;
+    opacity: 0; transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  #fontHint.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="card">
+      <div id="drag"></div>
+
+      <div id="tools">
+        <div class="tools-center">
+          <button class="tool-btn" id="btnPrev" title="上一曲" aria-label="上一曲">
+            <svg width="14" height="14" viewBox="0 0 24 24"><path d="M6 6h2v12H6V6zm3.5 6l8.5 6V6l-8.5 6z"/></svg>
+          </button>
+          <button class="tool-btn" id="btnPlay" title="播放 / 暂停" aria-label="播放/暂停">
+            <svg id="iconPlay" width="16" height="16" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <svg id="iconPause" width="16" height="16" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <button class="tool-btn" id="btnNext" title="下一曲" aria-label="下一曲">
+            <svg width="14" height="14" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+        <div class="tools-right">
+          <button class="tool-btn" id="btnLock" title="锁定 / 解锁位置" aria-label="锁定">
+            <svg id="iconLock" width="14" height="14" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+            <svg id="iconUnlock" width="14" height="14" viewBox="0 0 24 24" style="display:none"><path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></svg>
+          </button>
+          <button class="tool-btn" id="btnClose" title="关闭桌面歌词" aria-label="关闭">
+            <svg width="14" height="14" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="lyrics">
+        <div id="main" class="empty">未在播放</div>
+        <div id="subs"></div>
+      </div>
+
+      <div id="progress"><div id="bar"></div></div>
+    </div>
+    <div id="fontHint"></div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const DEFAULT_HL = "#20D9D0";
+  let state = {
+    title: "", artist: "", lines: [], activeIndex: -1,
+    isPlaying: false, progress: 0, duration: 0,
+    colors: { text: "#FFFFFF", active: DEFAULT_HL },
+    appearance: { fontSize: 26, fontFamily: "Microsoft YaHei", bgMode: "transparent" },
+    options: { karaokeMode: "line", lineMode: "dual", showProgress: true, lyricOffset: 0 },
+  };
+
+  function lineText(l) {
+    return l && typeof l === "object" ? (l.text || "") : String(l || "");
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // 换行动效：记录当前显示行，切换时重新触发一次 line-in 动画
+  let displayedAI = -2;
+  function retriggerLineIn() {
+    const el = $("lyrics");
+    el.classList.remove("line-in");
+    void el.offsetWidth; // 强制回流以重启动画
+    el.classList.add("line-in");
+  }
+
+  // 锁定状态
+  const LOCK_KEY = "tm-dl-locked";
+  let locked = localStorage.getItem(LOCK_KEY) === "1";
+  function applyLock() {
+    document.body.classList.toggle("locked", locked);
+    $("iconLock").style.display = locked ? "block" : "none";
+    $("iconUnlock").style.display = locked ? "none" : "block";
+  }
+  $("btnLock").addEventListener("click", () => {
+    locked = !locked;
+    try { localStorage.setItem(LOCK_KEY, locked ? "1" : "0"); } catch (_) {}
+    applyLock();
+  });
+
+  // 播放控制
+  $("btnPrev").addEventListener("click", () => window.lyrics.prev && window.lyrics.prev());
+  $("btnNext").addEventListener("click", () => window.lyrics.next && window.lyrics.next());
+  $("btnPlay").addEventListener("click", () => window.lyrics.togglePlay && window.lyrics.togglePlay());
+  $("btnClose").addEventListener("click", () => window.lyrics.hide && window.lyrics.hide());
+
+  // 双击歌词区切换播放 / 暂停
+  $("card").addEventListener("dblclick", () => window.lyrics.togglePlay && window.lyrics.togglePlay());
+
+  // 滚轮调节字号（未锁定时生效）：向上放大，向下缩小，并短暂显示当前字号
+  const FONT_MIN = 16, FONT_MAX = 40;
+  let fontHintTimer = null;
+  function showFontHint() {
+    const fs = Math.round(Number(state.appearance?.fontSize) || 24);
+    const el = $("fontHint");
+    el.textContent = fs >= FONT_MAX ? "字号已到最大" : fs <= FONT_MIN ? "字号已到最小" : `字号 ${fs}`;
+    el.classList.add("show");
+    clearTimeout(fontHintTimer);
+    fontHintTimer = setTimeout(() => el.classList.remove("show"), 700);
+  }
+  window.addEventListener("wheel", (e) => {
+    if (locked) return;
+    e.preventDefault();
+    const steps = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
+    const delta = -Math.sign(e.deltaY) * 2 * steps;
+    const cur = Number(state.appearance?.fontSize) || 24;
+    state.appearance.fontSize = Math.max(FONT_MIN, Math.min(FONT_MAX, cur + delta));
+    if (window.lyrics.setFontSize) window.lyrics.setFontSize(delta);
+    render();
+    showFontHint();
+  }, { passive: false });
+
+  function applyAppearance() {
+    const appr = state.appearance || {};
+    const fontSize = clamp(Number(appr.fontSize) || 26, 16, 40);
+    const family = appr.fontFamily || "Microsoft YaHei";
+    const bgMode = appr.bgMode === "card" ? "card" : "transparent";
+
+    document.body.classList.toggle("bg-card", bgMode === "card");
+    document.body.style.fontFamily = `"${family}", "Microsoft YaHei", "PingFang SC", sans-serif`;
+
+    // 主歌词字号，副行约为 0.55×
+    $("main").style.fontSize = fontSize + "px";
+    const subSize = Math.max(12, Math.round(fontSize * 0.55)) + "px";
+    document.querySelectorAll("#subs .sub-line").forEach((el) => {
+      el.style.fontSize = subSize;
+    });
+  }
+
+  function splitMainSub(text) {
+    const t = String(text || "");
+    // 如果歌词含分隔符，前半作主歌词，后半作翻译/副歌词
+    const seps = [" | ", " // ", " / ", "\t"];
+    for (const sep of seps) {
+      const i = t.indexOf(sep);
+      if (i > 0) return [t.slice(0, i), t.slice(i + sep.length)];
+    }
+    return [t, ""];
+  }
+
+  // 当前行在整句中的进度（0~1），用于逐字卡拉OK：依据当前行与下一行时间戳
+  function lineFrac(lines, ai, eff, duration) {
+    if (ai < 0 || ai >= lines.length) return 0;
+    const start = lines[ai].t;
+    const end = ai + 1 < lines.length ? lines[ai + 1].t : (duration || start + 5);
+    if (end <= start) return 1;
+    return clamp((eff - start) / (end - start), 0, 1);
+  }
+
+  // 逐字卡拉OK：已完成字符高亮，未完成略暗
+  function karaokeHtml(text, frac) {
+    const chars = Array.from(String(text || ""));
+    const n = chars.length;
+    if (!n) return "";
+    const done = Math.round(clamp(frac, 0, 1) * n);
+    let html = "";
+    for (let i = 0; i < n; i++) {
+      const cls = i < done ? "k-done" : "k-pending";
+      html += `<span class="${cls}">${escapeHtml(chars[i])}</span>`;
+    }
+    return html;
+  }
+
+  // 根据行数模式生成副歌词文本列表
+  function buildSubs(lines, ai, subText, mode) {
+    if (mode === "single") return [];
+    const arr = [];
+    if (subText) arr.push(subText);
+    if (mode === "multi") {
+      for (let k = 1; k <= 2; k++) {
+        const j = ai + k;
+        if (j >= 0 && j < lines.length) {
+          const t = lineText(lines[j]);
+          if (t && t !== subText) arr.push(t);
+        }
+      }
+    } else if (arr.length === 0) {
+      // dual 且无翻译段 → 显示下一句
+      const next = ai + 1 < lines.length ? lineText(lines[ai + 1]) : "";
+      if (next) arr.push(next);
+    }
+    return arr;
+  }
+
+  function renderSubs(texts) {
+    const subsEl = $("subs");
+    const fontSize = Math.max(12, Math.round((Number(state.appearance?.fontSize) || 26) * 0.55)) + "px";
+    if (!texts.length) {
+      subsEl.innerHTML = "";
+      return;
+    }
+    subsEl.innerHTML = texts
+      .map((t) => `<div class="sub-line" style="font-size:${fontSize}">${escapeHtml(t)}</div>`)
+      .join("");
+  }
+
+  function renderProgress(eff, duration) {
+    const wrap = $("progress");
+    const bar = $("bar");
+    if (state.options.showProgress === false) {
+      wrap.classList.add("hidden");
+      return;
+    }
+    wrap.classList.remove("hidden");
+    const total = Number(duration) || 0;
+    const pct = total > 0 ? clamp(eff / total, 0, 1) * 100 : 0;
+    bar.style.width = pct + "%";
+  }
+
+  function render() {
+    const { lines, activeIndex: ai, isPlaying, colors, duration } = state;
+    const lines_ = lines || [];
+    const textColor = (colors && colors.text) || "#FFFFFF";
+    const hlColor = (colors && colors.active) || DEFAULT_HL;
+
+    document.documentElement.style.setProperty("--hl", hlColor);
+    document.documentElement.style.setProperty("--text", textColor);
+
+    // 播放按钮图标
+    $("iconPlay").style.display = isPlaying ? "none" : "block";
+    $("iconPause").style.display = isPlaying ? "block" : "none";
+
+    applyAppearance();
+
+    const mainEl = $("main");
+    const cur = (ai >= 0 && ai < lines_.length) ? lineText(lines_[ai]) : "";
+
+    if (!cur) {
+      mainEl.classList.add("empty");
+      mainEl.textContent = isPlaying ? "暂无歌词" : "未在播放";
+      renderSubs([]);
+      renderProgress(state.progress || 0, duration);
+      displayedAI = -2;
+      return;
+    }
+    mainEl.classList.remove("empty");
+
+    const karaokeMode = state.options.karaokeMode || "line";
+    const lineMode = state.options.lineMode || "dual";
+    const offset = Number(state.options.lyricOffset) || 0;
+    const eff = (state.progress || 0) + offset / 1000;
+
+    const [mainText, subText] = splitMainSub(cur);
+    const showTrans = state.options.showTranslation !== false; // 默认开启
+    const lineChanged = ai !== displayedAI;
+    displayedAI = ai;
+
+    // 主行：整行高亮 或 逐字卡拉OK
+    if (karaokeMode === "karaoke") {
+      const frac = lineFrac(lines_, ai, eff, duration);
+      mainEl.innerHTML = karaokeHtml(mainText, frac);
+    } else {
+      mainEl.innerHTML = escapeHtml(mainText);
+    }
+
+    // 副行 / 进度条（翻译行仅在 showTranslation 开启时显示）
+    renderSubs(buildSubs(lines_, ai, showTrans ? subText : "", lineMode));
+    renderProgress(eff, duration);
+
+    if (lineChanged) retriggerLineIn();
+  }
+
+  function apply(payload) {
+    if (!payload || typeof payload !== "object") return;
+    state = { ...state, ...payload };
+    if (payload.colors) state.colors = { ...state.colors, ...payload.colors };
+    if (payload.appearance) state.appearance = { ...state.appearance, ...payload.appearance };
+    if (payload.options) state.options = { ...state.options, ...payload.options };
+    render();
+  }
+
+  window.lyrics.onUpdate(apply);
+  window.lyrics.get().then(apply);
+  setInterval(() => window.lyrics.get().then(apply), 800);
+
+  applyLock();
+  render();
+</script>
+</body>
+</html>

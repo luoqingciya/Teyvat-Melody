@@ -1,0 +1,24 @@
+# Teyvat Melody（提瓦特旋律）—— uv 项目定义
+# 依赖管理：uv sync 安装；uv run 执行命令。
+
+[project]
+name = "teyvat-melody"
+version = "1.1.0"
+description = "原神主题风格本地音乐播放器桌面应用（Electron + Flask + Vue 3）"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.0.0",
+    "mutagen>=1.47.0",
+    "pillow>=10.0.0",
+    "pycryptodome>=3.23.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0",
+]
+
+[tool.uv]
+# 应用非库，不强制 package 化
+package = false

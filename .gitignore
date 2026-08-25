@@ -1,0 +1,41 @@
+# 依赖
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 前端
+node_modules/
+frontend/dist/
+*.local
+
+# 打包/构建产物与本地缓存（体积大，不入库）
+build/
+build-temp/
+dist/
+build/                     # 兼容旧配置
+backend-dist/
+electron-dist/
+.npm-cache/
+_asar-extract/
+_asar-repack/
+.tmp-asar-check/
+# PyInstaller 打包配置是源码，需入库（覆盖上面的 *.spec 忽略）
+*.spec
+!build.spec
+
+# 应用运行数据
+*.db
+*.sqlite3
+config.json
+.appdata/
+data/
+music/
+fonts/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

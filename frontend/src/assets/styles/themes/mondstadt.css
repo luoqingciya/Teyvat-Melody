@@ -1,0 +1,21 @@
+/* 蒙德主题 · 自由的风与青色草甸（Anemo） */
+:root {
+  --teyvat-theme-name: "蒙德";
+  --teyvat-gold: #FFD76B;
+  --teyvat-gold-2: #F0B429;
+  --teyvat-blue: #4DA3FF;
+  --teyvat-bg-dark: #070B16;
+  --teyvat-card-bg: rgba(22, 28, 46, 0.55);
+  --teyvat-card-border: rgba(255, 255, 255, 0.08);
+  --teyvat-card-border-top: rgba(255, 255, 255, 0.16);
+  --teyvat-text-primary: #F0EAD6;
+  --teyvat-text-secondary: #8B8FA3;
+  --teyvat-text-active: #FFE9A8;
+  --teyvat-danger: #E5484D;
+  --teyvat-success: #5BC98C;
+
+  /* 环境氛围：左上风之清辉、右下水之微光，铺满深色底 */
+  --teyvat-ambient: radial-gradient(1100px 760px at 76% -8%, rgba(77, 163, 255, 0.16), transparent 58%),
+    radial-gradient(900px 640px at -4% 104%, rgba(255, 215, 107, 0.12), transparent 56%),
+    radial-gradient(720px 520px at 50% 118%, rgba(77, 163, 255, 0.08), transparent 60%);
+}
