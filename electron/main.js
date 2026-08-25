@@ -397,6 +397,9 @@ ipcMain.handle("win:op", (_e, { op }) => {
 //  - 最大化窗口进入沉浸播放：真正占满整块显示器并隐藏任务栏（先在普通态再进 kiosk，否则 Windows
 //    不会从最大化直接切到覆盖任务栏的全屏，表现就是"占满但任务栏仍在"）。
 let wasMaximizedBeforeFs = false;
+// 进入全屏（由最大化进入）前的“正常/还原”边界：退出时据此还原为居中大窗口，
+// 避免 unmaximize + setKiosk 的竞态把还原边界污染成“小窗口 / 靠左上角”。
+let fsRestoreBounds = null;
 // 记录当前是否处于"沉浸全屏"（进入全屏的意图状态）。关键点：对 frame:false + thickFrame:false 的无边框
 // 窗口，Windows 下 setKiosk(true) 后 isKiosk() 仍可能返回 false，因此不能只用 isKiosk()/isFullScreen()
 // 作为守卫依据，须用自维护标志让拖拽/窗口控制保持可靠。
@@ -412,7 +415,9 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
       // 从最大化 state 直接 setKiosk 不会隐藏任务栏（窗口仍按最大化/工作区处理），
       // 先还原成普通窗口再进入 kiosk，kiosk 会强制窗口覆盖整块显示器并遮蔽任务栏。
       wasMaximizedBeforeFs = true;
+      fsRestoreBounds = mainWindow.getNormalBounds();
       mainWindow.unmaximize();
+      if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
       mainWindow.setKiosk(true);
     }
     // 普通窗口：不进入原生全屏，保持窗口大小不变（沉浸视图由前端覆盖层呈现）。
@@ -427,9 +432,12 @@ ipcMain.handle("win:fullscreen", (_e, { flag }) => {
     // 进入前是最大化 → 退出后还原为最大化，尽量不丢失窗口状态
     if (wasMaximizedBeforeFs) {
       mainWindow.setResizable(true);
+      // 显式回到“进入前”的正常边界再最大化，确保之后的“窗口化”是居中大窗口而非小窗/左上角
+      if (fsRestoreBounds) mainWindow.setBounds(fsRestoreBounds);
       mainWindow.maximize();
     }
     wasMaximizedBeforeFs = false;
+    fsRestoreBounds = null;
     nativeFullscreen = false;
   }
   return { ok: true };
