@@ -81,6 +81,8 @@ send(EVENT_NAMES.inited, { status: true, openDevTools: false, sources })
       err4 = e;
     }
     ok("全失败抛错并带上游原因", !!err4 && /403/.test(err4.message), err4 && err4.message);
+    // 同一原因会在每个音质档重复，逐档罗列会刷屏；各档一致时应只报一次
+    ok("全失败时同一原因只报一次（不逐档刷屏）", !!err4 && (err4.message.match(/403/g) || []).length === 1, err4 && err4.message);
 
     // 5) 无启用源支持该平台 → 明确报错
     let err5 = null;

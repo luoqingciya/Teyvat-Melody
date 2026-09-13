@@ -196,6 +196,9 @@ function parseWy(data) {
         meta: {
           id: it.id,
           songId: it.id,
+          // 同 kw：把常用 ID 别名一并带上，兼容不同源脚本的取值习惯
+          songmid: String(it.id),
+          hash: String(it.id),
           albumId: it.al?.id ?? it.album?.id,
           fee: it.fee,
         },
@@ -218,7 +221,16 @@ function parseKw(data) {
         duration: it.DURATION,
         // 酷我封面字段常为空，有则用（无则由前端回退占位图）
         picUrl: it.web_albumpic_short ? `https://img1.kuwo.cn/star/albumcover/${it.web_albumpic_short}` : "",
-        meta: { rid, MUSICRID: it.MUSICRID, DC_TARGETID: it.DC_TARGETID, albumId: it.ALBUMID },
+        meta: {
+          rid,
+          // 源脚本读的字段名与我们的不一致：实测独家音源读 songmid（hash 亦可），
+          // 只给 rid 会导致取不到 ID、后端报错。这里把常用别名一并带上。
+          songmid: rid,
+          hash: rid,
+          MUSICRID: it.MUSICRID,
+          DC_TARGETID: it.DC_TARGETID,
+          albumId: it.ALBUMID,
+        },
       });
     })
     .filter((s) => s.meta.rid);

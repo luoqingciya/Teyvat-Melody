@@ -228,7 +228,10 @@ class SourceManager {
         errors.push(`${quality}: ${e.message}`);
       }
     }
-    throw new Error(`音质降级全部失败 → ${errors.join("；")}`);
+    // 同一原因会在每个音质档重复出现，逐档罗列会刷屏且看不出重点；
+    // 各档失败原因一致时只报一次，否则保留逐档信息便于定位。
+    const reasons = [...new Set(errors.map((e) => e.replace(/^[^:]+:\s*/, "")))];
+    throw new Error(`音质降级全部失败 → ${reasons.length === 1 ? reasons[0] : errors.join("；")}`);
   }
 
   /** 汇总全部启用源声明（音质选择、能力探测用） */

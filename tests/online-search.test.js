@@ -123,6 +123,11 @@ const KW_SAMPLE_TEXT =
     const wy = parseWy(WY_SAMPLE);
     ok("wy：毫秒转秒", wy[0].duration === 269, String(wy[0].duration));
     ok("wy：id 与专辑 id", wy[0].id === "online:wy:186016" && wy[0].meta.albumId === 18874, JSON.stringify(wy[0]));
+    ok(
+      "wy：带 songmid / hash 别名（兼容不同源脚本取值习惯）",
+      wy[0].meta.songmid === "186016" && wy[0].meta.hash === "186016",
+      JSON.stringify(wy[0].meta)
+    );
 
     // ---- kw（伪 JSON） ----
     const loose = parseLooseJson(KW_SAMPLE_TEXT);
@@ -132,6 +137,13 @@ const KW_SAMPLE_TEXT =
     const kw = parseKw(loose);
     ok("kw：过滤缺 rid 的记录", kw.length === 1, String(kw.length));
     ok("kw：MUSIC_ 前缀已剥离", kw[0].meta.rid === "228908" && kw[0].id === "online:kw:228908", JSON.stringify(kw[0]));
+    // 源脚本读的字段名与我们的不同：实测独家音源读 kw 的 songmid（hash 亦可），
+    // 只给 rid 会导致取不到 ID、源后端直接报错。这里守住别名必须带上。
+    ok(
+      "kw：带 songmid / hash 别名（源脚本实际读的字段）",
+      kw[0].meta.songmid === "228908" && kw[0].meta.hash === "228908",
+      JSON.stringify(kw[0].meta)
+    );
 
     // 转义单引号：走 JSON.parse 分支也要语义正确
     const esc = parseLooseJson("{'abslist':[{'SONGNAME':'it\\'s ok','MUSICRID':'MUSIC_1'}]}");

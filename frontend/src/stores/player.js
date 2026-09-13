@@ -43,11 +43,16 @@ function buildMusicInfo(song) {
   if (singer) info.singer = singer;
   if (song.album) info.album = song.album;
   if (song.interval != null && info.interval == null) info.interval = song.interval;
-  // 平台 ID 别名互补（仅在有值时补，避免让源脚本误判字段存在）
-  if (info.songmid == null && info.mid != null) info.songmid = info.mid;
-  if (info.mid == null && info.songmid != null) info.mid = info.songmid;
-  if (info.hash == null && info.FileHash != null) info.hash = info.FileHash;
-  if (info.FileHash == null && info.hash != null) info.FileHash = info.hash;
+  // 平台 ID 别名互补：不同源脚本读的字段名不一样（实测独家音源读 kw 的 songmid、
+  // 读 kg 的 hash），而我们各平台搜索拿到的 ID 字段名也不统一。把已有的平台 ID
+  // 补全到所有常见字段名上，最大化兼容 —— 这正是「musicInfo 塞全平台 ID」的约定。
+  const ID_KEYS = ["songmid", "hash", "rid", "id", "mid", "FileHash"];
+  const firstId = ID_KEYS.map((k) => info[k]).find((v) => v != null && v !== "");
+  if (firstId != null) {
+    for (const k of ID_KEYS) {
+      if (info[k] == null || info[k] === "") info[k] = firstId;
+    }
+  }
   return toPlain(info);
 }
 
@@ -417,7 +422,8 @@ export const usePlayerStore = defineStore("player", {
       } catch (e) {
         if (token !== onlineLoadToken) return;
         this.isPlaying = false;
-        toastError(`在线播放失败：${e.message}`);
+        // 附一句可操作提示：源解析失败多半是该源不支持这个平台，而不是应用故障
+        toastError(`在线播放失败：${e.message}\n可尝试换用其他平台的搜索结果，或在「设置 → 自定义源」启用其他源`);
       } finally {
         if (token === onlineLoadToken) this.onlineLoading = false;
       }

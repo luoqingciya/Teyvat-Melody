@@ -195,26 +195,35 @@ const ok = (name, cond, extra) => {
     if (!state?.rows) throw new Error("无结果，跳过播放验证");
 
     // 6) 点第一条播放：验证在线播放链路（online:getUrl + 同源代理取流）
+    //    判定要严：不能只看「行变高亮」——那只能说明 playQueue 被调用了，
+    //    真正的失败（源解析不出地址）会晚几秒才以 toast 出现，且时长始终为 00:00。
     await cdp.eval("document.querySelector('.online-row').click()");
     let play = null;
     for (let i = 0; i < 40; i++) {
       play = await cdp.eval(`(() => {
         const row = document.querySelector('.online-row--active');
+        // 控制条里两个 .time-display：前者当前时间，后者总时长
+        const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
         const toast = document.querySelector('.tm-toast-host');
-        // audio 元素是 new Audio() 创建、未挂到 DOM，故从界面状态判断
-        const icon = document.querySelector('.op-btn .app-icon');
         return {
           active: !!row,
           activeText: row ? row.innerText.replace(/\\s+/g, ' ').trim().slice(0, 60) : null,
+          current: times[0] || null,
+          duration: times[1] || null,
           toast: toast ? toast.textContent.trim() : '',
         };
       })()`);
-      if (play.toast || (play.active && play.activeText)) break;
+      if (play.toast) break; // 已报错，不必再等
+      const gotMeta = play.duration && play.duration !== "00:00" && play.duration !== "--:--";
+      const advancing = play.current && play.current !== "00:00";
+      if (gotMeta && advancing) break;
       await sleep(500);
     }
     console.log("  播放状态:", JSON.stringify(play));
     ok("点击结果后该行变为当前播放项", !!play?.active, "未出现 .online-row--active");
-    ok("播放未报错", !play?.toast, play?.toast);
+    ok("播放未报错（源解析 + 代理取流成功）", !play?.toast, play?.toast);
+    ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
+    ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
 
     // 7) 设置页「关于与更新」：真实走一次 GitHub Release 检查
     await cdp.eval(`(() => {
