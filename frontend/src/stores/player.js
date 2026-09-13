@@ -95,6 +95,8 @@ export const usePlayerStore = defineStore("player", {
       // ---- 在线歌曲（第三方源）状态 ----
       onlineLoading: false, // 正在向主进程解析真实播放地址
       onlineQuality: "", // 实际命中的音质（音质降级后的结果）
+      // 最近一次在线播放失败（供在线搜索页刷新「哪些平台你的源播不了」的提示）
+      lastOnlineError: null, // { source, message, at }
     };
   },
 
@@ -422,6 +424,7 @@ export const usePlayerStore = defineStore("player", {
       } catch (e) {
         if (token !== onlineLoadToken) return;
         this.isPlaying = false;
+        this.lastOnlineError = { source: song.source, message: e.message, at: Date.now() };
         // 附一句可操作提示：源解析失败多半是该源不支持这个平台，而不是应用故障
         toastError(`在线播放失败：${e.message}\n可尝试换用其他平台的搜索结果，或在「设置 → 自定义源」启用其他源`);
       } finally {

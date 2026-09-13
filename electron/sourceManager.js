@@ -17,6 +17,28 @@ class SourceManager {
     this.dir = path.join(rootDir, "sources");
     /** @type {Map<string, {instance: SourceInstance|null, file: string, enabled: boolean, error: string|null}>} */
     this.items = new Map();
+    // 平台解析失败记忆：源声明支持某平台、实际却解析不出地址（如源后端不支持该平台）时，
+    // 记下来供界面提示，避免用户反复「搜到了却播不了」。源列表变化即失效。
+    /** @type {Map<string, {message: string, at: number}>} */
+    this.failures = new Map();
+  }
+
+  /** 源列表发生任何变化后调用：旧的解析失败结论不再可信 */
+  _clearFailures() {
+    this.failures.clear();
+  }
+
+  /**
+   * 各平台最近的解析失败记录（供界面提示）。
+   * @param {number} [ttlMs] 超过该时长的记录视为过期，默认 10 分钟
+   */
+  platformWarnings(ttlMs = 10 * 60 * 1000) {
+    const now = Date.now();
+    const out = {};
+    for (const [key, rec] of this.failures) {
+      if (now - rec.at <= ttlMs) out[key] = { message: rec.message, at: rec.at };
+    }
+    return out;
   }
 
   _configPath() {
@@ -32,6 +54,9 @@ class SourceManager {
   }
 
   _saveConfig() {
+    // 这里是「源列表发生变化」的唯一收口（init / 导入 / 删除 / 启停 / 重载都会走到），
+    // 顺带清空平台失败记忆 —— 源变了，之前「这个平台播不了」的结论就不再可信。
+    this._clearFailures();
     const items = [...this.items.entries()].map(([id, it]) => ({ id, file: it.file, enabled: it.enabled }));
     try {
       fs.writeFileSync(this._configPath(), JSON.stringify({ items }, null, 2));
@@ -222,7 +247,10 @@ class SourceManager {
         });
         // 洛雪契约返回字符串 URL；对个别返回 { url } 的源做兼容
         const url = typeof result === "string" ? result : result && result.url;
-        if (url) return { url, quality, sourceId, sourceName };
+        if (url) {
+          this.failures.delete(sourceKey); // 该平台本次可用，清掉历史失败
+          return { url, quality, sourceId, sourceName };
+        }
         errors.push(`${quality}: 源未返回有效 URL`);
       } catch (e) {
         errors.push(`${quality}: ${e.message}`);
@@ -231,7 +259,11 @@ class SourceManager {
     // 同一原因会在每个音质档重复出现，逐档罗列会刷屏且看不出重点；
     // 各档失败原因一致时只报一次，否则保留逐档信息便于定位。
     const reasons = [...new Set(errors.map((e) => e.replace(/^[^:]+:\s*/, "")))];
-    throw new Error(`音质降级全部失败 → ${reasons.length === 1 ? reasons[0] : errors.join("；")}`);
+    const message = `音质降级全部失败 → ${reasons.length === 1 ? reasons[0] : errors.join("；")}`;
+    // 记下失败：界面据此在平台筛选条上提示「这个平台你的源可能播不了」，
+    // 避免用户反复「搜得到却播不了」。
+    this.failures.set(sourceKey, { message, at: Date.now() });
+    throw new Error(message);
   }
 
   /** 汇总全部启用源声明（音质选择、能力探测用） */

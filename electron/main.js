@@ -761,7 +761,9 @@ ipcMain.handle("online:platforms", () => {
   const platforms = playablePlatforms();
   const qualitys = {};
   for (const k of platforms) qualitys[k] = caps[k]?.qualitys || [];
-  return { ok: true, platforms, qualitys };
+  // 带上各平台最近的解析失败记录：源声明支持某平台、实际却解析不出地址时，
+  // 界面可提前提示，避免用户「搜得到却播不了」。
+  return { ok: true, platforms, qualitys, warnings: sourceManager.platformWarnings() };
 });
 
 // 在线歌曲歌词：优先用源声明的 lyric 能力，否则走平台歌词接口。

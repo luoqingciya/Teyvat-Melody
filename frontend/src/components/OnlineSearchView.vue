@@ -27,11 +27,16 @@
           v-for="p in PLATFORMS"
           :key="p.key"
           class="plat-chip"
-          :class="{ 'plat-chip--on': picked.includes(p.key), 'plat-chip--off': !available.includes(p.key) }"
+          :class="{
+            'plat-chip--on': picked.includes(p.key),
+            'plat-chip--off': !available.includes(p.key),
+            'plat-chip--warn': !!warnings[p.key],
+          }"
           :disabled="!available.includes(p.key)"
           :title="platTitle(p.key)"
           @click="togglePlat(p.key)"
         >
+          <span v-if="warnings[p.key]" class="plat-chip__warn" aria-hidden="true">⚠</span>
           {{ p.label }}
         </button>
       </div>
@@ -108,7 +113,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import GlassCard from "./GlassCard.vue";
 import SongContextMenu from "./SongContextMenu.vue";
 import AppIcon from "./AppIcon.vue";
@@ -134,6 +139,8 @@ const searched = ref(false);
 const errorMsg = ref("");
 const available = ref([]); // 有启用源支持的平台
 const qualitys = ref({}); // 各平台源声明支持的音质
+// 各平台最近的解析失败记录（源声明支持、实际却解析不出地址）：提前提示，避免「搜得到却播不了」
+const warnings = ref({});
 const picked = ref([]); // 当前勾选的平台
 let searchToken = 0; // 并发令牌：连续搜索时丢弃旧结果
 
@@ -149,9 +156,11 @@ function platLabel(key) {
   return PLATFORMS.find((p) => p.key === key)?.label || key;
 }
 
-/** 平台 chip / 来源徽标的提示：可用平台展示其源声明支持的最高音质 */
+/** 平台 chip / 来源徽标的提示：可用平台展示其源声明支持的最高音质；解析失败过的平台给出原因 */
 function platTitle(key) {
   if (!available.value.includes(key)) return t("online.noSource");
+  const warn = warnings.value[key];
+  if (warn) return `${platLabel(key)} · ${t("online.platformWarnTitle")}：${warn.message}`;
   const q = qualitys.value[key] || [];
   return q.length ? `${platLabel(key)} · ${q.join(" / ")}` : platLabel(key);
 }
@@ -163,12 +172,26 @@ async function loadPlatforms() {
     const r = await api.getOnlinePlatforms();
     available.value = r?.platforms ?? [];
     qualitys.value = r?.qualitys ?? {};
+    warnings.value = r?.warnings ?? {};
   } catch {
     available.value = [];
     qualitys.value = {};
+    warnings.value = {};
   }
   // 默认勾选全部可用平台
   picked.value = [...available.value];
+}
+
+/** 只刷新失败提示，不动用户已勾选的平台（播放失败后调用） */
+async function refreshWarnings() {
+  const api = window.pywebview?.api;
+  if (!api || typeof api.getOnlinePlatforms !== "function") return;
+  try {
+    const r = await api.getOnlinePlatforms();
+    warnings.value = r?.warnings ?? {};
+  } catch {
+    /* 刷新失败保持原样即可 */
+  }
 }
 
 function togglePlat(key) {
@@ -260,6 +283,15 @@ function formatDuration(sec) {
 }
 
 onMounted(loadPlatforms);
+
+// 播放失败后刷新失败提示：让「这个平台你的源播不了」立刻反映到筛选条上，
+// 而不是等用户再搜一次才发现。
+watch(
+  () => player.lastOnlineError,
+  (err) => {
+    if (err) refreshWarnings();
+  }
+);
 </script>
 
 <style scoped>
@@ -343,6 +375,15 @@ onMounted(loadPlatforms);
 .plat-chip--off {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* 该平台最近解析失败过（源声明支持、实际播不了）：加个警示，避免用户反复踩同一个坑 */
+.plat-chip--warn {
+  border-color: color-mix(in srgb, var(--teyvat-danger) 55%, transparent);
+  color: var(--teyvat-danger);
+}
+.plat-chip__warn {
+  margin-right: 4px;
+  font-size: 11px;
 }
 
 .row-grid {

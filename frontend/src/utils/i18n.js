@@ -158,6 +158,7 @@ const zh = {
   "online.playNext": "下一首播放",
   "online.addQueue": "加入队列",
   "online.unknownArtist": "未知歌手",
+  "online.platformWarnTitle": "上次解析失败，你的源可能播不了该平台",
   // 在线更新
   "update.title": "关于与更新",
   "update.current": "当前版本",
@@ -319,6 +320,7 @@ const en = {
   "online.playNext": "Play next",
   "online.addQueue": "Add to queue",
   "online.unknownArtist": "Unknown artist",
+  "online.platformWarnTitle": "Failed last time - your source may not support this platform",
   // Online updates
   "update.title": "About & Updates",
   "update.current": "Current version",

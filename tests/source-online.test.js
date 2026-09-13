@@ -93,15 +93,31 @@ send(EVENT_NAMES.inited, { status: true, openDevTools: false, sources })
     }
     ok("无源支持平台时明确报错", !!err5 && /wy/.test(err5.message), err5 && err5.message);
 
-    // 6) 禁用源后不再参与解析
+    // 6) 失败记忆：源声明支持某平台、实际却解析失败 → 记下来供界面提前提示
+    const warns = mgr.platformWarnings();
+    ok("解析失败的平台被记入 platformWarnings", !!warns.tx, JSON.stringify(Object.keys(warns)));
+    ok("警告带上失败原因", /403/.test(warns.tx?.message || ""), JSON.stringify(warns.tx));
+    ok("解析成功的平台不产生警告", !warns.kw, JSON.stringify(Object.keys(warns)));
+    ok("超过 TTL 的记录视为过期", Object.keys(mgr.platformWarnings(-1)).length === 0);
+
+    // 7) 成功解析会清掉该平台的历史失败（直接注入一条历史记录来验证清除路径）
+    mgr.failures.set("kw", { message: "历史失败", at: Date.now() });
+    ok("注入的历史失败已记入", !!mgr.platformWarnings().kw);
+    await mgr.resolveMusicUrl("kw", { rid: "1" });
+    ok("解析成功后清掉该平台的历史失败", !mgr.platformWarnings().kw, JSON.stringify(mgr.platformWarnings()));
+
+    // 8) 源列表变化 → 旧的失败结论不再可信，全部清空
     await mgr.toggle("a", false);
-    let err6 = null;
+    ok("源列表变化后清空失败记忆", Object.keys(mgr.platformWarnings()).length === 0, JSON.stringify(mgr.platformWarnings()));
+
+    // 9) 禁用源后不再参与解析
+    let err9 = null;
     try {
       await mgr.resolveMusicUrl("kw", {});
     } catch (e) {
-      err6 = e;
+      err9 = e;
     }
-    ok("禁用源后 kw 不可用", !!err6, err6 && err6.message);
+    ok("禁用源后 kw 不可用", !!err9, err9 && err9.message);
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
     process.exitCode = 1;

@@ -225,6 +225,33 @@ const ok = (name, cond, extra) => {
     ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
     ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
 
+    // 6b) 故意播一个「源声明支持、实际播不了」的平台（网易云对当前源就是如此）：
+    //     应报错，并在平台筛选条上留下警示，让用户不必反复踩同一个坑。
+    const wyClicked = await cdp.eval(`(() => {
+      const row = [...document.querySelectorAll('.online-row')].find((r) => /网易云/.test(r.textContent));
+      if (!row) return 'no-wy-row';
+      row.click();
+      return 'clicked';
+    })()`);
+    ok("找到并点击网易云结果", wyClicked === "clicked", wyClicked);
+    let wyState = null;
+    for (let i = 0; i < 40; i++) {
+      wyState = await cdp.eval(`(() => {
+        const toast = document.querySelector('.tm-toast-host');
+        const chip = [...document.querySelectorAll('.plat-chip')].find((c) => /网易云/.test(c.textContent));
+        return {
+          toast: toast ? toast.textContent.replace(/\\s+/g, ' ').trim().slice(0, 70) : '',
+          warned: !!(chip && chip.classList.contains('plat-chip--warn')),
+          chipTitle: chip ? (chip.getAttribute('title') || '') : '',
+        };
+      })()`);
+      if (wyState.warned) break;
+      await sleep(500);
+    }
+    console.log("  网易云结果:", JSON.stringify(wyState));
+    ok("播不了的平台在筛选条上留下警示（⚠）", !!wyState?.warned, JSON.stringify(wyState));
+    ok("警示的 tooltip 带上失败原因", /失败/.test(wyState?.chipTitle || ""), wyState?.chipTitle);
+
     // 7) 设置页「关于与更新」：真实走一次 GitHub Release 检查
     await cdp.eval(`(() => {
       const btn = [...document.querySelectorAll('.traffic-btn')].find((b) => b.title && b.title.length);
