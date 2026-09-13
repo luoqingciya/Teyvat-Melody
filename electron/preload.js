@@ -4,17 +4,20 @@
 // 只暴露前端实际调用的方法，保持架构纯净。
 const { contextBridge, ipcRenderer } = require("electron");
 
-const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
+// 把参数转成结构化克隆可安全传输的普通值：
+// Electron IPC 用 structured clone，Vue 的 reactive 对象是 Proxy，**无法被克隆**
+//（会抛 "An object could not be cloned."）。这里统一在 invoke 出口做 JSON 深拷贝，
+// 而不是让每个方法各自记得处理 —— 漏一个就会在界面上表现为莫名的「操作失败」。
+const cloneSafe = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+
+/** 统一的 IPC 出口：所有载荷都在此深拷贝，杜绝 reactive 对象漏进结构化克隆。 */
+const invoke = (channel, payload) => ipcRenderer.invoke(channel, cloneSafe(payload));
 
 // 主窗口控制 → IPC（TheHeader 的 win(action)）
 const WIN_OPS = ["minimize", "toggleMaximize", "close", "show"];
 
 // 其余方法 → Flask /api/rpc（与 app.py_api.Api 公开方法对应）
 const RPC_METHODS = ["saveFont", "removeFont"];
-
-// 把参数转成结构化克隆可安全传输的普通值：
-// Electron IPC 用 structured clone，Vue reactive 代理对象无法克隆，须先 JSON 序列化。
-const cloneSafe = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
 const api = {};
 
@@ -29,7 +32,7 @@ api.windowDragEnd = () => invoke("win:drag-end");
 // 桌面歌词（PlayerControls / desktopLyricsBridge）
 api.toggleDesktopLyrics = () => invoke("lyrics:toggle");
 api.getLyricsState = () => invoke("lyrics:getState");
-api.pushDesktopLyrics = (...args) => invoke("lyrics:push", { args: cloneSafe(args) });
+api.pushDesktopLyrics = (...args) => invoke("lyrics:push", { args });
 // 监听歌词窗口可见性变化（歌词窗口 ✕ 关闭时同步主界面开关状态）
 api.onLyricsVisibility = (cb) => {
   ipcRenderer.on("lyrics:visibility", (_e, v) => cb(v));
@@ -43,7 +46,7 @@ api.notifySong = (payload) => invoke("notify:song", { ...payload });
 api.setFullscreen = (flag) => invoke("win:fullscreen", { flag: !!flag });
 // 迷你模式：小窗置顶播放器
 api.toggleMini = () => invoke("mini:toggle");
-api.pushMiniState = (snapshot) => invoke("mini:push", { snapshot: cloneSafe(snapshot) });
+api.pushMiniState = (snapshot) => invoke("mini:push", { snapshot });
 // 自定义源管理（洛雪源脚本）
 api.listSources = () => invoke("source:list");
 api.importSource = () => invoke("source:import");
@@ -52,12 +55,12 @@ api.toggleSource = (id, enabled) => invoke("source:toggle", { id, enabled: !!ena
 api.reloadSource = (id) => invoke("source:reload", { id });
 // 在线歌曲播放：取真实音频 URL（音质降级 + 换源重试在主进程完成）
 api.getOnlineUrl = (source, musicInfo, quality) =>
-  invoke("online:getUrl", { source, musicInfo: cloneSafe(musicInfo), quality });
+  invoke("online:getUrl", { source, musicInfo, quality });
 // 在线搜索：可播放平台 + 关键词搜索
 api.getOnlinePlatforms = () => invoke("online:platforms");
 api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sources });
 // 在线歌曲歌词（翻译内联、逐字已展开，渲染进程零解析）
-api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo: cloneSafe(musicInfo) });
+api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));
@@ -65,7 +68,7 @@ api.onMiniVisibility = (cb) => {
 };
 
 for (const m of RPC_METHODS) {
-  api[m] = (...args) => invoke("py:rpc", { method: m, args: cloneSafe(args) });
+  api[m] = (...args) => invoke("py:rpc", { method: m, args });
 }
 
 contextBridge.exposeInMainWorld("pywebview", { api });
