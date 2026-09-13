@@ -156,6 +156,14 @@ onMounted(async () => {
   window.__prev = () => player.prev();
   window.__next = () => player.next();
   window.__seek = (t) => player.seek(t);
+  // 在线歌曲联调入口：手工构造在线歌曲直接播放（Phase 3 在线搜索页上线后可移除）。
+  // 用法（devtools）：__playOnline({ id:'online:kw:228908', online:true, source:'kw',
+  //   name:'歌名', singer:'歌手', meta:{ rid:'228908' } })
+  window.__playOnline = (song) => {
+    if (!song || !song.id) return false;
+    player.playSong(song, [song]);
+    return true;
+  };
   // 应用系统级全局快捷键（后台遥控播放），并同步通知开关状态
   applyGlobalHotkeys(config.globalHotkeys);
   watchNotification();
@@ -239,6 +247,7 @@ onBeforeUnmount(() => {
   delete window.__next;
   delete window.__seek;
   delete window.__setDlFontSize;
+  delete window.__playOnline;
 });
 
 // ---- 全局快捷键 ----

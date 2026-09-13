@@ -7,7 +7,7 @@ from flask import Flask, jsonify, send_from_directory, abort
 import mimetypes
 from pathlib import Path
 
-from app.api import playlists, scan, songs, stream
+from app.api import online, playlists, scan, songs, stream
 from app.models import database
 from app.utils.paths import data_dir
 
@@ -92,6 +92,9 @@ def create_app() -> Flask:
 
     # 音频流（无 /api 前缀，符合契约 /stream/<song_id>）
     app.register_blueprint(stream.bp, url_prefix="/stream")
+
+    # 在线音频代理（第三方源解析出的 CDN URL → 同源转发，透传 Range / 伪装 Referer）
+    app.register_blueprint(online.bp, url_prefix="/api/online")
 
     @app.post("/api/rpc")
     def rpc():

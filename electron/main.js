@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { SourceManager } = require("./sourceManager");
+const onlineSearch = require("./onlineSearch");
 
 const BACKEND_URL = "http://127.0.0.1:5000";
 const IS_DEV = !app.isPackaged;
@@ -732,6 +733,56 @@ ipcMain.handle("source:toggle", async (_e, { id, enabled }) => {
 
 ipcMain.handle("source:reload", async (_e, { id }) => {
   return { ok: await sourceManager.reload(id) };
+});
+
+// 在线歌曲取真实播放 URL：音质降级链 + 多源换源重试全部在主进程完成，
+// 渲染进程只拿到最终可播放的 CDN URL（失败时返回 message 供 toast 展示）。
+ipcMain.handle("online:getUrl", async (_e, { source, musicInfo, quality }) => {
+  try {
+    const r = await sourceManager.resolveMusicUrl(source, musicInfo || {}, quality);
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+});
+
+// 当前"可播放"的搜索平台：必须有已启用源声明支持，否则搜到也播不了。
+// 同时回传各平台源声明支持的音质（供 UI 展示"最高可用音质"，实际取哪个由播放时降级链决定）。
+function playablePlatforms() {
+  return Object.keys(sourceManager.enabledSources()).filter((k) =>
+    onlineSearch.DEFAULT_SOURCES.includes(k)
+  );
+}
+
+ipcMain.handle("online:platforms", () => {
+  const caps = sourceManager.enabledSources();
+  const platforms = playablePlatforms();
+  const qualitys = {};
+  for (const k of platforms) qualitys[k] = caps[k]?.qualitys || [];
+  return { ok: true, platforms, qualitys };
+});
+
+// 在线搜索：搜索走平台公开接口（与自定义源无关），但只查有源支持的平台。
+ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
+  const available = playablePlatforms();
+  const picked = (Array.isArray(sources) && sources.length ? sources : available).filter((s) =>
+    available.includes(s)
+  );
+  if (!picked.length) {
+    return {
+      ok: false,
+      list: [],
+      errors: [],
+      availableSources: available,
+      message: "尚未启用任何支持在线播放的自定义源，请先在「设置 → 自定义源」导入并启用",
+    };
+  }
+  try {
+    const r = await onlineSearch.search(keyword, picked);
+    return { ok: true, ...r, availableSources: available };
+  } catch (e) {
+    return { ok: false, list: [], errors: [], availableSources: available, message: e.message };
+  }
 });
 
 // ---------------- 切歌桌面通知 ----------------

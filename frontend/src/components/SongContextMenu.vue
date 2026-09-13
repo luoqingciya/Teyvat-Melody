@@ -25,19 +25,22 @@
           <AppIcon name="add-to" :size="15" />
           <span>加入队列</span>
         </button>
-        <div class="song-ctx__divider"></div>
-        <button class="song-ctx__item" @click="$emit('toggle-fav')">
-          <AppIcon :name="fav ? 'heart' : 'heart-outline'" :size="15" />
-          <span>{{ fav ? "取消收藏" : "收藏" }}</span>
-        </button>
-        <button class="song-ctx__item" @click="$emit('detail')">
-          <AppIcon name="info" :size="15" />
-          <span>查看详情</span>
-        </button>
-        <button class="song-ctx__item" @click="$emit('edit')">
-          <AppIcon name="edit" :size="15" />
-          <span>编辑信息</span>
-        </button>
+        <!-- 在线歌曲无本地实体：收藏 / 详情 / 编辑信息不适用（Phase 3 范围内不提供） -->
+        <template v-if="!online">
+          <div class="song-ctx__divider"></div>
+          <button class="song-ctx__item" @click="$emit('toggle-fav')">
+            <AppIcon :name="fav ? 'heart' : 'heart-outline'" :size="15" />
+            <span>{{ fav ? "取消收藏" : "收藏" }}</span>
+          </button>
+          <button class="song-ctx__item" @click="$emit('detail')">
+            <AppIcon name="info" :size="15" />
+            <span>查看详情</span>
+          </button>
+          <button class="song-ctx__item" @click="$emit('edit')">
+            <AppIcon name="edit" :size="15" />
+            <span>编辑信息</span>
+          </button>
+        </template>
       </div>
     </Transition>
   </Teleport>
@@ -54,6 +57,8 @@ const props = defineProps({
   song: { type: Object, default: null },
   playing: { type: Boolean, default: false },
   fav: { type: Boolean, default: false },
+  // 在线歌曲：隐藏"收藏 / 查看详情 / 编辑信息"（无本地实体，不适用）
+  online: { type: Boolean, default: false },
 });
 const emit = defineEmits(["close", "play", "play-next", "add-queue", "toggle-fav", "detail", "edit"]);
 

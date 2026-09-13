@@ -8,6 +8,9 @@ const { SourceInstance } = require("./sourceHost");
 
 const CONFIG_FILE = "sources.json";
 
+// 音质降级链（高 → 低）：按源声明取最高可用音质，失败逐级降档
+const QUALITY_CHAIN = ["flac24bit", "flac", "320k", "128k"];
+
 class SourceManager {
   /** @param {string} rootDir 软件根目录（main.js 的 dataRoot()） */
   constructor(rootDir) {
@@ -69,7 +72,15 @@ class SourceManager {
       this.items.set(id, { instance, file, enabled, error: null });
       console.log(`自定义源已加载：${instance.meta.name}（${id}）`, Object.keys(instance.sources || {}));
     } catch (e) {
-      this.items.set(id, { instance: null, file, enabled, error: e.message });
+      // 保留 meta / updateInfo：源因"版本过低"拒绝初始化时，UI 需要靠 updateInfo 给出更新提示
+      this.items.set(id, {
+        instance: null,
+        file,
+        enabled,
+        error: e.message,
+        meta: instance.meta,
+        updateInfo: instance.updateInfo,
+      });
       console.warn(`自定义源加载失败（${file}）：`, e.message);
     }
   }
@@ -77,13 +88,23 @@ class SourceManager {
   list() {
     return [...this.items.entries()].map(([id, it]) => {
       if (it.instance) return { ...it.instance.summary(it.enabled), error: null };
-      // 加载失败的源也要在列表中可见（展示错误，允许删除/重试）
-      let meta = { name: id, description: "", version: "", author: "", homepage: "" };
-      try {
-        const { parseMeta } = require("./sourceHost");
-        meta = parseMeta(fs.readFileSync(path.join(this.dir, it.file), "utf8"));
-      } catch {}
-      return { id, ...meta, enabled: it.enabled, sources: {}, updateInfo: null, error: it.error };
+      // 加载失败的源也要在列表中可见（展示错误 / 更新提示，允许删除、重试）
+      let meta = it.meta;
+      if (!meta) {
+        meta = { name: id, description: "", version: "", author: "", homepage: "" };
+        try {
+          const { parseMeta } = require("./sourceHost");
+          meta = parseMeta(fs.readFileSync(path.join(this.dir, it.file), "utf8"));
+        } catch {}
+      }
+      return {
+        id,
+        ...meta,
+        enabled: it.enabled,
+        sources: {},
+        updateInfo: it.updateInfo || null,
+        error: it.error,
+      };
     });
   }
 
@@ -133,20 +154,81 @@ class SourceManager {
     return !this.items.get(id).error;
   }
 
-  /** 调用启用源的 action。返回第一个成功的结果；全部失败抛错（供换源重试）。 */
+  /** 汇总某平台在「已启用源」中声明的音质与 actions（并集）。 */
+  capabilitiesFor(sourceKey) {
+    const qualitys = new Set();
+    const actions = new Set();
+    for (const [, it] of this.items) {
+      if (!it.enabled || !it.instance?.sources) continue;
+      const decl = it.instance.sources[sourceKey];
+      if (!decl) continue;
+      (decl.qualitys || []).forEach((q) => qualitys.add(q));
+      (decl.actions || []).forEach((a) => actions.add(a));
+    }
+    return { qualitys: [...qualitys], actions: [...actions] };
+  }
+
+  /** 调用启用源的 action。返回首个成功结果及命中的源信息；全部失败抛错（错误聚合便于排查）。 */
   async callEnabled(sourceKey, action, info) {
     const errors = [];
-    for (const [, it] of this.items) {
+    for (const [id, it] of this.items) {
       if (!it.enabled || !it.instance) continue;
       const decl = it.instance.sources?.[sourceKey];
       if (!decl || !(decl.actions || []).includes(action)) continue;
       try {
-        return await it.instance.call(sourceKey, action, info);
+        const result = await it.instance.call(sourceKey, action, info);
+        return { result, sourceId: id, sourceName: it.instance.meta.name };
       } catch (e) {
         errors.push(`${it.instance.meta.name}: ${e.message}`);
       }
     }
     throw new Error(errors.length ? errors.join("；") : `没有可用源支持 ${sourceKey}/${action}`);
+  }
+
+  /**
+   * 解析在线歌曲的播放 URL：**音质降级 + 多源换源重试**。
+   *
+   * 先取该平台在启用源中声明的音质并集，按 QUALITY_CHAIN 由高到低排序（用户偏好音质优先）；
+   * 每个音质内部由 callEnabled 逐个源尝试，任一源成功即返回。全部失败抛错，错误链聚合返回。
+   *
+   * @param {string} sourceKey 平台 key（kw/kg/tx/wy/mg/local）
+   * @param {object} musicInfo 平台歌曲信息（应含全量平台 ID：hash/songmid/rid/id/mid 等）
+   * @param {string} [preferred] 用户偏好音质；未声明时忽略
+   * @returns {Promise<{url:string, quality:string, sourceId:string, sourceName:string}>}
+   */
+  async resolveMusicUrl(sourceKey, musicInfo, preferred) {
+    const { qualitys, actions } = this.capabilitiesFor(sourceKey);
+    if (!actions.includes("musicUrl")) {
+      throw new Error(`没有启用的源支持平台「${sourceKey}」的 musicUrl`);
+    }
+
+    // 偏好优先，其余按降级链；源声明的非标准音质排在最后（尽量仍能播）
+    const chain = [];
+    if (preferred && qualitys.includes(preferred)) chain.push(preferred);
+    for (const q of QUALITY_CHAIN) {
+      if (qualitys.includes(q) && !chain.includes(q)) chain.push(q);
+    }
+    for (const q of qualitys) {
+      if (!chain.includes(q)) chain.push(q);
+    }
+    if (!chain.length) chain.push(preferred || "128k"); // 源未声明音质时的兜底
+
+    const errors = [];
+    for (const quality of chain) {
+      try {
+        const { result, sourceId, sourceName } = await this.callEnabled(sourceKey, "musicUrl", {
+          type: quality,
+          musicInfo,
+        });
+        // 洛雪契约返回字符串 URL；对个别返回 { url } 的源做兼容
+        const url = typeof result === "string" ? result : result && result.url;
+        if (url) return { url, quality, sourceId, sourceName };
+        errors.push(`${quality}: 源未返回有效 URL`);
+      } catch (e) {
+        errors.push(`${quality}: ${e.message}`);
+      }
+    }
+    throw new Error(`音质降级全部失败 → ${errors.join("；")}`);
   }
 
   /** 汇总全部启用源声明（音质选择、能力探测用） */

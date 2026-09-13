@@ -11,6 +11,7 @@
       <nav-item to="/favorites" :label="t('sidebar.favorites')" icon="heart" />
       <nav-item to="/recent" :label="t('sidebar.recent')" icon="rotate" />
       <nav-item to="/playlists" :label="t('sidebar.playlists')" icon="list" :paths="['/playlist']" />
+      <nav-item to="/online" :label="t('sidebar.online')" icon="cloud" />
       <nav-item to="/stats" :label="t('sidebar.stats')" icon="rotate" />
       <nav-item to="/duplicates" :label="t('sidebar.duplicates')" icon="search" />
     </nav>

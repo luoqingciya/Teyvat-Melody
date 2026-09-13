@@ -7,4 +7,9 @@
 from app.server import create_app
 
 if __name__ == "__main__":
-    create_app().run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
+    # threaded=True：音频流（/stream 本地文件、/api/online/proxy 在线转发）是长连接，
+    # 单线程下一条流会占满 worker，把 /api/songs 等请求全部堵死（表现为界面卡住不响应）。
+    # 各请求内自建 SQLite 连接，扫描任务已用 _scan_lock 保护，多线程安全。
+    create_app().run(
+        host="127.0.0.1", port=5000, debug=False, use_reloader=False, threaded=True
+    )

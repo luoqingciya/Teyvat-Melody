@@ -129,7 +129,7 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 | wy（网易云） | `music.163.com/api/cloudsearch/pc`（POST） | ✅ 免加密，返回 `id` |
 | kw（酷我） | `search.kuwo.cn/r.s`（老接口） | ✅ 可用，但返回**单引号伪 JSON**，需 `eval` 沙箱内求值或正则转标准 JSON；新接口 `kuwo.cn/api/www/...` 被 WAF 拦截（Node 裸请求拿不到 `kw_token`），作为备选 |
 
-建议默认启用 tx + kg + wy 三个稳定接口，kw 走老接口兜底。
+建议四平台全部默认启用（`kw/kg/tx/wy` 均已实测可用）；`kw` 走老接口，返回**单引号伪 JSON**，需 `eval` 沙箱内求值或正则转标准 JSON；新接口 `kuwo.cn/api/www/...` 被 WAF 拦截（Node 裸请求拿不到 `kw_token`），作为备选。
 
 统一返回结构：
 
@@ -150,8 +150,8 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 
 - 在线歌曲 ID：`online:{source}:{platformId}`。
 - `playerStore._play()` 检测 `online` 标记：
-  1. IPC `online:getUrl`（sourceHost → 脚本 `musicUrl`）。
-  2. 得 URL → `audio.src = /api/online/proxy?url=<encoded>`。
+  1. IPC `online:getUrl`（主进程 `sourceManager.resolveMusicUrl` → 脚本 `musicUrl`，内含音质降级与换源）。
+  2. 得 URL → `audio.src = /api/online/proxy?url=<encoded>&source=<平台key>`（`source` 供代理选 Referer）。
 - **Flask 代理**（新增 `app/api/online.py`）：
   - 流式转发音频，**透传 Range 头**（保证 seek/进度条可用）。
   - 按平台注入 Referer / User-Agent。
@@ -193,13 +193,39 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 > - QQ 接口 `Content-Type: application/x-javascript` 但内容为 JSON → 宿主对文本类响应一律先尝试 `JSON.parse`（已在 sourceHost.js 实现）。
 > - 部分第三方源用 `/*!`（压缩保留注释）而非 `/**` 写头部元数据 → parseMeta 已兼容两种格式。
 
+> **Phase 3 实测补充**：
+> - **四平台接口全部实测可用**（开发机直连）：`kw/kg/tx/wy` 各返回结果、零错误，故四平台全部默认启用（原计划"默认三平台 + kw 兜底"已无必要）。
+> - **解析与取数拆成纯函数**（`parseTx/parseKg/parseWy/parseKw`）：把"网络"与"响应→归一化"分离，解析逻辑可离线自检（`electron/__test-search.js`，24 项），对接线上接口形态变化时只需改一处。
+> - **只搜"有启用源支持"的平台**：搜索走平台公开接口、与源无关，但没有源支持时搜到也播不了。故平台筛选条中不可用平台置灰，且无任何可用源时给出引导文案。
+> - **音质标识的处理**：搜索结果本身不知道音质（实际取哪个由播放时的降级链决定），故不逐行硬标，改为把"该平台源声明支持的最高音质"放在平台 chip / 来源徽标的 tooltip 里，避免误导。
+> - **kw 伪 JSON 两级解析**：先换引号后 `JSON.parse`（转义单引号 `\'` 先占位，避免被误换后语义漂移），失败再退到**空沙箱**求值（无 require/process，1s 超时）。
+> - **源初始化失败要暴露真因**：部分源会因"版本过低"主动拒绝初始化（只发 `updateAlert`、不发 `inited`），此时仅报"超时"会让用户无从下手。现已在失败信息中附带源上报的更新提示与更新地址，并把 `updateInfo` 保留进失败记录供 UI 展示。
+> - **`INIT_TIMEOUT` 10s → 30s 且可注入**：真实（尤其混淆过的）源常在 init 阶段做多步服务端握手；构造函数支持 `{ initTimeout }` 覆盖，自检用短超时以免被拖慢。
+> - ✅ **端到端已实测通过**（2026-09-13，源 `lx-music-source-v6`）：真实平台搜索 → 源解析 → 真实 CDN 地址 → Flask 代理取流。`kg` 命中 `flac24bit`、`tx` 命中 `flac`；经代理取回的 `kg` FLAC 是 **55.4 MB 有效文件**（魔数 `fLaC`），`Range: bytes=0-1023` 返回 **206 + `Content-Range: bytes 0-1023/55397039`**，第二段 Range 内容不同 → **seek 可用**。
+> - **源兼容性差异确实存在**（正是 §4 标注的风险）：`lx-music-source-v5` 被其服务端要求升级到 v6（且更新通道禁止直接下载）；`野花音源` 的 `/v1/url` 接口 404（后端只暴露 `/v1/urlinfo`）。这类问题现在都能在设置页看到明确原因。
+
+> **宿主健壮性修复（联调真实源时发现，已修复并回归）**：
+> 1. **`lx.request` 回调异常隔离**：源脚本在回调里抛错会沿 Node 事件回调冒泡成未捕获异常，**直接把 Electron 主进程打崩**（一个行为不端的源就能让整个应用挂掉）。现统一 `try/catch` 兜住，只记日志。
+> 2. **响应体解析以内容判定**：原先只看 `Content-Type`，遇到"JSON 文本却标 `application/octet-stream`"（实测某源后端如此）就返回 Buffer，源取 `body.code` 得到 `undefined` 而报错。现改为先看内容是否像 JSON，再看类型决定字符串/Buffer。
+> 3. **`call()` 超时定时器泄漏**：竞速用的 20s 定时器从不清理，每次调用都吊住事件循环（表现为自检迟迟不退出），长会话下持续累积。现于 `finally` 中清理。
+>
+> 回归覆盖：`electron/__test-request.js`（8 项：非标 Content-Type 解析 + 回调抛错不崩溃）。
+
+> **Phase 2 实测补充**：
+> - **Flask 必须开 `threaded=True`**（`electron_backend.py`）：音频流是长连接，单线程下一条流会占满 worker，把 `/api/songs` 等请求全部堵死。各请求内自建 SQLite 连接、扫描任务已有 `_scan_lock` 保护，多线程安全。
+> - **音质降级与换源都放在主进程**（`sourceManager.resolveMusicUrl`）：降级链 `flac24bit→flac→320k→128k`（用户偏好音质优先），每档内部再由 `callEnabled` 逐个启用源重试；渲染进程只拿到最终 URL，失败时返回聚合错误供 toast。这样渲染侧无需感知源与音质的组合复杂度。
+> - **代理只放行 http/https**（`app/api/online.py`）：源脚本是第三方代码，避免被当作任意协议跳板。上游错误状态码原样透传（416/404 等），前端据此触发降档。
+> - **CSP 无需改动**：媒体经同源 `/api/online/proxy` 加载，仍命中 `media-src 'self'`。
+> - **联调入口**：无搜索 UI 时用 `window.__playOnline(song)`（App.vue 暴露）手工构造在线歌曲验证；Phase 3 搜索页上线后可移除。
+> - **自检脚本**：`electron/__test-online.js`（降级/换源，7 项）、`app/__test-online.py`（代理 Range/防盗链头，17 项），均在 `.gitignore` 内不入库。
+
 ## 5. 实施阶段
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
 | **Phase 1** ✅ 已完成 2026-09-13 | SourceHost 宿主 + 源管理 IPC + 设置页源管理 UI | 能导入真实第三方源脚本并完成 `inited` 握手，列表正确显示平台/音质声明 |
-| **Phase 2** | 播放链路：musicUrl 调用 + Flask 代理 + playerStore 接入 + 音质降级/换源 | 手工构造在线歌曲可完整播放、可 seek、失败自动降档 |
-| **Phase 3** | 在线搜索（酷我适配器）+ 搜索视图 | 关键词搜索 → 结果列表 → 点击播放全链路通畅 |
+| **Phase 2** ✅ 已完成 2026-09-13 | 播放链路：musicUrl 调用 + Flask 代理 + playerStore 接入 + 音质降级/换源 | 手工构造在线歌曲可完整播放、可 seek、失败自动降档 |
+| **Phase 3** ✅ 已完成 2026-09-13 | 在线搜索（四平台适配器）+ 搜索视图 | 关键词搜索 → 结果列表 → 点击播放全链路通畅 |
 | **Phase 4** | 歌词/封面/逐字解析 + 通知、桌面歌词、迷你播放器适配 | 在线歌曲歌词（含逐字）正常显示，各子窗口状态同步 |
 
 ## 6. 附：关键数据结构

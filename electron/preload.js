@@ -50,6 +50,12 @@ api.importSource = () => invoke("source:import");
 api.removeSource = (id) => invoke("source:remove", { id });
 api.toggleSource = (id, enabled) => invoke("source:toggle", { id, enabled: !!enabled });
 api.reloadSource = (id) => invoke("source:reload", { id });
+// 在线歌曲播放：取真实音频 URL（音质降级 + 换源重试在主进程完成）
+api.getOnlineUrl = (source, musicInfo, quality) =>
+  invoke("online:getUrl", { source, musicInfo: cloneSafe(musicInfo), quality });
+// 在线搜索：可播放平台 + 关键词搜索
+api.getOnlinePlatforms = () => invoke("online:platforms");
+api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sources });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

@@ -12,6 +12,7 @@ const routes = [
       { path: "recent", name: "recent", component: () => import("@/components/SongList.vue") },
       { path: "playlists", name: "playlists", component: () => import("@/components/PlaylistHub.vue") },
       { path: "playlist/:id", name: "playlist", component: () => import("@/components/SongList.vue") },
+      { path: "online", name: "online", component: () => import("@/components/OnlineSearchView.vue") },
       { path: "stats", name: "stats", component: () => import("@/components/StatsView.vue") },
       { path: "duplicates", name: "duplicates", component: () => import("@/components/DuplicatesView.vue") },
     ],
