@@ -13,7 +13,8 @@
     "lint": "cd frontend && npm run lint",
     "test:js": "node tests/run.js",
     "test:py": "uv run python tests/online-proxy.test.py",
-    "test": "npm run test:js && npm run test:py"
+    "test": "npm run test:js && npm run test:py",
+    "test:ui": "node tools/ui-e2e.js"
   },
   "devDependencies": {
     "electron": "^31.7.7",

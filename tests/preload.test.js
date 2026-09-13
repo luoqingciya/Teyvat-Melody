@@ -5,7 +5,7 @@
 //   1) 渲染进程主世界 → preload 隔离世界：由 contextBridge 用结构化克隆复制参数，
 //      发生在 preload 代码执行之前 —— **本测试无法覆盖**（打桩 electron 就绕过了它）。
 //      这道边界要求调用侧先把 reactive 对象转成普通值（见 frontend/src/utils/bridge.js
-//      的 toPlain），真正能验证它的是 electron/__test-ui.js（真实 Electron + 真实界面）。
+//      的 toPlain），真正能验证它的是 tools/ui-e2e.js（真实 Electron + 真实界面）。
 //   2) preload 隔离世界 → 主进程：由 preload 的 invoke 统一深拷贝 —— **本测试覆盖这道**。
 //
 // 背景：曾误以为「在 preload 里做深拷贝」就能解决界面上的
