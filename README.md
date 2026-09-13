@@ -1,6 +1,6 @@
 # Teyvat Melody（提瓦特旋律）
 
-基于 **Electron + Python 3.12 (Flask) + Vue 3 (Vite)** 混合架构的原神主题风格本地音乐播放器桌面应用。
+基于 **Electron + Python 3.12 (Flask) + Vue 3 (Vite)** 混合架构的原神主题风格音乐播放器桌面应用：本地音乐库 + 自定义源在线播放。
 
 - **Python 后端**：Flask 提供 API / 音频流 / 音乐库 / 元数据解析 / 数据库
 - **Electron 壳**：主窗口、系统托盘、单实例、透明桌面歌词（HTML 渲染，效果对标 QQ/酷狗）
@@ -38,6 +38,16 @@
 - **启动恢复上次播放队列**：可选在启动时恢复上一会话的播放队列与当前位置（依赖「启动继续播放」开启）
 - **主题主色联动**：切换主题时自动清空自定义主色，使主色跟随当前主题的金色，保持观感一致
 
+### 在线播放（自定义源）
+
+- **自定义源**：兼容洛雪音乐自定义源脚本（`.js`），在 Node `vm` 沙箱中运行；源文件存于软件根目录 `sources/`。**应用不内置任何源**，需自行导入并确认可信（源为第三方代码，可发起任意网络请求）
+- **在线搜索**：内置 `tx`(QQ) / `kg`(酷狗) / `wy`(网易云) / `kw`(酷我) 四平台搜索适配器；只搜「有启用源支持」的平台，避免搜到却播不了
+- **流式播放**：源解析出的 CDN 地址经本机同源代理转发，**透传 `Range`**（进度条可拖动 seek），按平台自动伪装 Referer / User-Agent 绕过防盗链
+- **音质降级 + 换源重试**：`flac24bit → flac → 320k → 128k` 逐级降档，同一音质内多个源自动换源；全部失败给出聚合原因
+- **在线歌词（含逐字）**：四平台歌词接口；自动合并翻译成双语（复用主/副歌词分隔符约定，`showTranslation` 开关三处界面统一生效）；酷狗 **KRC 解密**后可显示**逐字卡拉OK**
+- **在线封面**：远程封面经同源图片代理加载（**不放宽 CSP**），加载失败回退默认封面；切歌通知也带封面
+- **在线歌曲与本地歌曲共用同一套播放内核**：队列、播放模式、桌面歌词、迷你小窗、睡眠定时、音效均无需区分
+
 ## 项目结构
 
 ```
@@ -45,19 +55,23 @@
 ├── electron/                  # Electron 主进程
 │   ├── main.js                # 主进程：spawn 后端、主窗口、托盘、单实例、桌面歌词窗口、迷你小窗、IPC
 │   ├── preload.js             # window.pywebview.api 兼容层（只暴露前端实际调用的方法）
+│   ├── sourceHost.js          # 洛雪自定义源宿主运行时（vm 沙箱 + globalThis.lx + 受控 crypto/zlib/buffer）
+│   ├── sourceManager.js       # 源文件存储、启停、音质降级与换源解析（resolveMusicUrl）
+│   ├── onlineSearch.js        # 在线搜索适配器（tx/kg/wy/kw，含 kw 伪 JSON 解析）
+│   ├── onlineLyric.js         # 在线歌词适配器 + LRC/翻译/KRC 逐字解析
 │   ├── loading.html           # 主窗口启动加载页（后端就绪后跳转 SPA）
 │   ├── lyrics-preload.js      # 桌面歌词窗口数据桥
-│   ├── lyrics.html            # 桌面歌词页（透明 / 卡拉OK / 锁定 / 进度条）
+│   ├── lyrics.html            # 桌面歌词页（透明 / 卡拉OK 逐字 / 锁定 / 进度条）
 │   ├── mini-preload.js        # 迷你播放器小窗数据桥
 │   └── mini.html              # 迷你播放器小窗页（置顶）
 ├── electron_backend.py        # 后端入口（纯 Flask，Electron 主进程 spawn）
 ├── package-electron.ps1       # Electron 一键打包脚本（后端 exe + 前端 + electron-builder）
 ├── build.spec                 # PyInstaller 打包配置（后端 exe → backend-dist/TeyvatBackend.exe）
-├── package.json               # Electron 依赖与脚本（npm run dev / build）
+├── package.json               # Electron 依赖、脚本与 electron-builder 配置
 ├── app/                       # Python 后端
 │   ├── server.py              # Flask 应用工厂（POST /api/rpc RPC 桥 + CSP 安全头）
 │   ├── py_api.py              # 后端 API（hello / scanLibrary / saveFont / removeFont）
-│   ├── api/                   # 路由层（songs / playlists / scan / stream）
+│   ├── api/                   # 路由层（songs / playlists / scan / stream / online）
 │   ├── services/              # 业务逻辑（library / metadata / playlist）
 │   ├── models/                # 数据模型与统一响应格式
 │   └── utils/
@@ -65,9 +79,16 @@
 │   └── src/
 │       ├── router/            # Hash 模式路由
 │       ├── stores/            # Pinia（player / library / playlist / config）
-│       ├── components/        # 核心组件（侧栏、歌曲列表、全屏播放器等）
+│       ├── components/        # 核心组件（侧栏、歌曲列表、全屏播放器、在线搜索等）
 │       ├── composables/       # useApi（封装后端 REST 接口）
+│       ├── utils/             # 字体 / 歌词桥 / 封面地址 / 轻提示等
 │       └── assets/styles/     # 全局样式与主题
+├── tests/                     # 自动化测试（Node + Python，由 CI 运行）
+│   ├── run.js                 # Node 测试统一入口
+│   ├── *.test.js              # 源宿主 / 播放链路 / 搜索 / 歌词解析
+│   ├── online-proxy.test.py   # 音频与封面代理（Range 透传、防盗链头、参数校验）
+│   └── fixtures/              # 测试用源脚本样本（自造，非第三方）
+├── .github/workflows/         # GitHub Actions（ci.yml 测试 / release.yml 打包发布）
 └── resources/                 # 打包资源（应用图标等）
 ```
 
@@ -94,6 +115,43 @@ npm run dev
 
 主进程会自动：spawn `.venv/Scripts/python.exe electron_backend.py`（Flask :5000）→ 立即创建主窗口（先显示内置 loading 页）与桌面歌词/迷你小窗 → 后端就绪后主窗口再跳转到 Flask 提供的 Vue SPA。
 
+### 3. 运行测试
+
+```bash
+npm test            # Node + Python 全套（详见下方「测试」）
+```
+
+## 测试
+
+自动化测试位于 `tests/`，**不依赖外网**（搜索/歌词用固定样本，代理测试用本地 HTTP 服务器）。
+唯一例外是 `source-host.test.js` 里对 QQ 搜索接口的真实请求 —— 外网不可达时记为 `SKIP` 而非失败，
+避免把环境问题误判成代码缺陷。
+
+```bash
+npm run test:js     # Node 侧：源宿主 / 播放链路 / 搜索 / 歌词解析
+npm run test:py     # Python 侧：音频与封面代理
+npm test            # 两者都跑
+```
+
+覆盖范围：
+
+- **源宿主**：沙箱隔离（无 `require`/`process`）、`inited` 握手与超时、回调异常隔离、响应体解析（非标 Content-Type）
+- **播放链路**：音质降级链、偏好音质优先、多源换源、全失败错误聚合、禁用源后失效
+- **搜索**：四平台响应归一化、缺字段过滤、酷我伪 JSON 解析
+- **歌词**：LRC、翻译合并（容差匹配）、LX 逐字、酷狗 KRC 解密往返、组装优先级
+- **代理**：Range/206 与 `Content-Range` 透传、Referer/UA 注入、协议与参数校验、上游错误透传、封面非图片拒绝
+
+## CI / 发布（GitHub Actions）
+
+- **`.github/workflows/ci.yml`** —— 每次 push / PR 触发：
+  - `frontend`：ESLint + `vite build`
+  - `tests`：Ubuntu 与 Windows **双平台**跑 Node + Python 测试（尽早暴露路径差异）
+- **`.github/workflows/release.yml`** —— 打 `v*` tag（或手动触发）在 `windows-latest` 上打包，
+  产出安装包与免安装 zip 并创建 GitHub Release；手动触发只上传 Artifacts，不发 Release。
+
+> **发布前请把 `package.json` 的 `version` 与 tag 对齐**：工作流会校验，不一致直接失败。
+> 产物文件名取自 `package.json` 的 `version`，不校验就会产出「版本号对不上」的安装包。
+
 ## 打包（Windows）
 
 一键脚本（推荐，需 uv + node/npm）：
@@ -115,10 +173,11 @@ npm run build
 
 产物输出至 `electron-dist/`：
 
-- **安装包**：`electron-dist/TeyvatMelody Setup <版本>.exe`（NSIS，可自定义安装目录）
+- **安装包（exe）**：`electron-dist/TeyvatMelody-Setup-<版本>.exe`（NSIS，可自定义安装目录）
+- **免安装包（zip）**：`electron-dist/TeyvatMelody-<版本>-x64.zip`（解压即用）
 - **便携目录**：`electron-dist/TeyvatMelody-portable/`（即 `win-unpacked` 重命名；内含 `TeyvatMelody.exe` + `resources/backend/TeyvatBackend.exe`）
 
-> **便携目录是一份自包含的可运行应用**：运行数据（`data/`、`music/`、`.appdata/`）保存在目录自身根目录，因此**把整个 `TeyvatMelody-portable` 文件夹复制到目标位置即可直接运行**，无需执行安装程序——适合免安装分发或替换到现有运行根目录。
+> **免安装包 / 便携目录都是自包含的可运行应用**：运行数据（`data/`、`music/`、`.appdata/`）保存在目录自身根目录，因此**解压或复制整个文件夹到任意位置即可直接运行**，无需安装程序——适合免安装分发或替换到现有运行根目录。
 
 electron-builder 配置见 `package.json` 的 `build` 字段（`extraResources.backend` → 主进程以 `process.resourcesPath/backend/TeyvatBackend.exe` 启动）。主进程通过 [`electron/main.js`](electron/main.js) 的 `findBackendExe` **递归查找** `resources/backend/` 下的 `TeyvatBackend.exe`，兼容「单文件」与「PyInstaller COLLECT 目录」两种形态。
 
@@ -136,7 +195,13 @@ Electron 主进程 (electron/main.js)
  │         └─ hello / scanLibrary / saveFont / removeFont → POST /api/rpc（Flask）
  ├─ 桌面歌词窗口（transparent/frameless/alwaysOnTop）→ lyrics.html
  │    └─ 歌词数据经 IPC 实时推送（500ms 增量）+ 800ms 拉取兜底，HTML 卡拉OK渲染
+ │    └─ 在线歌曲带逐字时间轴时走**真逐字**（字内渐变），窗口内 rAF 插值只重绘主行
  ├─ 迷你播放器小窗（alwaysOnTop）→ mini.html（封面/标题/进度/遥控）
+ ├─ 自定义源（洛雪源脚本）：vm 沙箱运行，源文件存于软件根目录 sources/
+ │    ├─ 播放：playerStore → IPC online:getUrl → resolveMusicUrl（音质降级 + 换源）
+ │    │         → audio.src = /api/online/proxy（Flask 同源代理，透传 Range、伪装 Referer）
+ │    └─ 搜索 / 歌词 / 封面：IPC online:search / online:lyric + /api/online/image
+ │          （搜索只查「有启用源支持」的平台；歌词优先用源的 lyric 能力，否则走平台接口）
  ├─ 系统托盘 + 单实例（requestSingleInstanceLock）
 ```
 
@@ -145,7 +210,7 @@ Electron 主进程 (electron/main.js)
 - **桌面歌词真透明**：Electron `transparent: true` 原生支持，HTML/CSS 渲染（黑描边、卡拉OK）
 - **路由**：**必须使用 Hash 模式**，规避 `file://` 协议下 History 404 白屏
 - API 统一返回：`{ "code", "data", "message" }`
-- 数据存储：数据库（SQLite）存放于软件根目录 `data`，音乐副本存放于 `music`，便于移动整个目录到任意位置
+- 数据存储：数据库（SQLite）存放于软件根目录 `data`，音乐副本存放于 `music`，自定义源存放于 `sources`，便于移动整个目录到任意位置
 
 ## 安全与开发约定
 
@@ -153,6 +218,11 @@ Electron 主进程 (electron/main.js)
 - **IPC 序列化**：Electron `ipcRenderer.invoke` 用结构化克隆，**Vue reactive 对象不能直接传**（会抛 `could not be cloned`）——桥接/兼容层已统一做 JSON 深拷贝，新代码沿用该模式
 - **preload**：contextBridge 暴露对象必须显式枚举方法，不能使用 Proxy（动态 `get` 陷阱在隔离环境下不生效）
 - **Electron 后端**：`electron_backend.py` 只跑 Flask，不创建任何窗口；托盘 / 窗口控制全部由主进程负责
+- **Flask 必须 `threaded=True`**：音频流是长连接，单线程下一条流会占满 worker，把 `/api/songs` 等请求全部堵死
+- **远程资源一律走同源代理**（音频 `/api/online/proxy`、封面 `/api/online/image`），**不放宽 CSP**；代理只放行 `http/https`，防止第三方源脚本把本地代理当成任意协议跳板
+- **翻译歌词以 ` | ` 内联进 `text`**：这是项目既有的主/副歌词分隔符约定（`LyricsPanel.vue`、`lyrics.html`、桌面歌词三处共用），改渲染前先看这里
+- **源脚本是不可信代码**：在 `vm` 沙箱中运行（不注入 `require` / `process`）；且 `lx.request` 的回调必须异常隔离——源在回调里抛错会冒泡成未捕获异常，**直接把主进程打崩**
+- **应用不内置任何源**：`sources/` 只存用户自行导入的脚本，仓库与安装包均不含任何源脚本
 
 ## Electron 安装排障（国内网络）
 
