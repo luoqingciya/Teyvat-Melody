@@ -6,8 +6,11 @@
 非法 scheme 拒绝、缺参拒绝、上游错误透传、Cache-Control。
 """
 import http.server
+import json
 import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -22,6 +25,11 @@ except Exception:  # noqa: BLE001  旧版本或非常规 stdout（如被重定�
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.server import create_app  # noqa: E402
+from app.services import online_cache  # noqa: E402
+
+# 把缓存目录指向临时目录：测试不应污染项目根目录下的 cache/
+_CACHE_TMP = Path(tempfile.mkdtemp(prefix="tm-cache-"))
+online_cache._root_cache_dir = lambda: _CACHE_TMP
 
 PAYLOAD = bytes(range(256)) * 40  # 10240 字节确定性内容
 IMAGE = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 4  # 伪 JPEG 字节
@@ -51,6 +59,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         UPSTREAM["headers"] = {k.lower(): v for k, v in self.headers.items()}
         UPSTREAM["path"] = self.path
+        UPSTREAM["count"] = UPSTREAM.get("count", 0) + 1  # 用于验证缓存命中时不再打上游
         if self.path.startswith("/cover.jpg"):
             self._send(IMAGE, 200, "image/jpeg", {"Content-Length": str(len(IMAGE))})
             return
@@ -178,6 +187,106 @@ def main() -> int:
     missing = quote(f"http://127.0.0.1:{port}/missing.jpg", safe="")
     r13 = client.get(f"/api/online/image?url={missing}")
     ok("封面：上游 404 透传", r13.status_code == 404, str(r13.status_code))
+
+    # ---- 在线播放缓存 ----
+    song = quote(f"http://127.0.0.1:{port}/song.mp3", safe="")
+    online_cache.clear()
+    online_cache.save_config({"enabled": True, "maxBytes": 1024 ** 3})
+
+    r20 = client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:1:320k")
+    body20 = r20.get_data()
+    ok("缓存：首次播放返回完整内容", r20.status_code == 200 and len(body20) == len(PAYLOAD), f"{r20.status_code} len={len(body20)}")
+    ok("缓存：首次播放后已落盘", online_cache.stats()["files"] == 1, json.dumps(online_cache.stats()))
+
+    mid = UPSTREAM.get("count", 0)
+    r21 = client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:1:320k")
+    ok("缓存：二次播放命中缓存且内容一致", r21.get_data() == body20)
+    ok("缓存：命中时不再请求上游", UPSTREAM.get("count", 0) == mid, f"{mid} → {UPSTREAM.get('count', 0)}")
+    # 命中走 send_file，会持有文件句柄；Windows 上不关就删不掉缓存文件（后续 clear/淘汰会失败）
+    r21.close()
+
+    r22 = client.get(
+        f"/api/online/proxy?url={song}&source=kw&key=kw:1:320k", headers={"Range": "bytes=100-199"}
+    )
+    ok("缓存：命中后 Range 仍返回 206", r22.status_code == 206 and r22.get_data() == PAYLOAD[100:200], f"{r22.status_code} len={len(r22.get_data())}")
+    ok(
+        "缓存：命中后 Content-Range 正确",
+        r22.headers.get("Content-Range") == f"bytes 100-199/{len(PAYLOAD)}",
+        str(r22.headers.get("Content-Range")),
+    )
+    r22.close()
+
+    # 子区间请求不写缓存：避免把「半个文件」当成完整缓存
+    # 注意：测试客户端是惰性的，不读 body 流式生成器就不会跑完 → 必须 get_data() 才有意义
+    online_cache.clear()
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:2:320k", headers={"Range": "bytes=0-99"}).get_data()
+    ok("缓存：子区间请求不写缓存", online_cache.stats()["files"] == 0, json.dumps(online_cache.stats()))
+
+    # 从 0 一直到末尾的 Range（Chromium 首次请求音频的形态）视为完整内容
+    client.get(
+        f"/api/online/proxy?url={song}&source=kw&key=kw:3:320k",
+        headers={"Range": f"bytes=0-{len(PAYLOAD) - 1}"},
+    ).get_data()
+    ok("缓存：0..末尾的 Range 视为完整内容并落盘", online_cache.stats()["files"] == 1, json.dumps(online_cache.stats()))
+
+    # 无 key（旧式调用）不写缓存
+    online_cache.clear()
+    client.get(f"/api/online/proxy?url={song}&source=kw").get_data()
+    ok("缓存：不带 key 时不写缓存", online_cache.stats()["files"] == 0, json.dumps(online_cache.stats()))
+
+    # 关闭缓存后不写
+    online_cache.save_config({"enabled": False})
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:4:320k").get_data()
+    ok("缓存：关闭后不写缓存", online_cache.stats()["files"] == 0, json.dumps(online_cache.stats()))
+    online_cache.save_config({"enabled": True})
+
+    # 容量上限淘汰：上限只放得下一个文件，写第二个后应淘汰最旧的
+    online_cache.clear()
+    online_cache.save_config({"maxBytes": len(PAYLOAD) + 10})
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:old:320k").get_data()
+    time.sleep(0.05)  # 让两次写入的 mtime 可区分（LRU 依据）
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:new:320k").get_data()
+    st = online_cache.stats()
+    ok("缓存：超出上限时淘汰到上限内", st["bytes"] <= len(PAYLOAD) + 10, json.dumps(st))
+    ok(
+        "缓存：淘汰最久未使用的，保留最近的",
+        online_cache.cached_path("kw:new:320k") is not None and online_cache.cached_path("kw:old:320k") is None,
+        json.dumps(st),
+    )
+    online_cache.save_config({"maxBytes": 1024 ** 3})
+
+    # 管理接口
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:clr:320k").get_data()
+    r23 = client.post("/api/online/cache/clear")
+    ok("缓存：清空接口生效", r23.status_code == 200 and online_cache.stats()["bytes"] == 0, json.dumps(online_cache.stats()))
+
+    r24 = client.post("/api/online/cache/config", json={"maxBytes": 256 * 1024 ** 2})
+    ok(
+        "缓存：配置接口返回最新配置",
+        r24.status_code == 200 and r24.get_json()["data"]["maxBytes"] == 256 * 1024 ** 2,
+        json.dumps(r24.get_json()),
+    )
+    r25 = client.get("/api/online/cache")
+    data25 = r25.get_json()["data"]
+    ok("缓存：统计接口返回占用与可选上限", r25.status_code == 200 and "maxBytesOptions" in data25 and "bytes" in data25, json.dumps(data25))
+
+    # ---- 完整内容判定 / 后台补完的取舍（纯函数）----
+    from app.api.online import _is_full_body, _total_bytes, _worth_finishing
+
+    ok("完整内容：200 视为完整", _is_full_body(200, {}))
+    ok("完整内容：0..末尾的 206 视为完整", _is_full_body(206, {"Content-Range": "bytes 0-99/100"}))
+    ok("完整内容：中间片段的 206 不算完整", not _is_full_body(206, {"Content-Range": "bytes 0-99/200"}))
+    ok("完整内容：416 等其它状态不算完整", not _is_full_body(416, {}))
+
+    ok("总字节：优先取 Content-Range 的总量", _total_bytes({"Content-Range": "bytes 0-99/12345"}) == 12345)
+    ok("总字节：无 Range 时取 Content-Length", _total_bytes({"Content-Length": "999"}) == 999)
+    ok("总字节：都没有时返回 0", _total_bytes({}) == 0)
+
+    mb = 1024 * 1024
+    ok("后台补完：不足 1MB 不值得继续（避免替用户偷跑流量）", not _worth_finishing(500 * 1024, 10 * mb))
+    ok("后台补完：已下 30% 以上值得继续", _worth_finishing(4 * mb, 10 * mb))
+    ok("后台补完：已下不足 30% 不值得继续", not _worth_finishing(2 * mb, 10 * mb))
+    ok("后台补完：总量未知时按已下大小判断", _worth_finishing(2 * mb, 0))
 
     server.shutdown()
     return 1 if globals().get("_failed") else 0

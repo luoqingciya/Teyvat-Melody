@@ -65,6 +65,17 @@ export function useApi() {
     return jget(`/api/playback/stats?days=${days}`);
   }
 
+  // 在线播放缓存（设置页）
+  function getOnlineCache() {
+    return jget("/api/online/cache").then((res) => res?.data ?? null);
+  }
+  function clearOnlineCache() {
+    return jpost("/api/online/cache/clear").then((res) => res?.data ?? null);
+  }
+  function setOnlineCacheConfig(patch) {
+    return jpost("/api/online/cache/config", patch).then((res) => res?.data ?? null);
+  }
+
   // 歌单
   function loadPlaylists() {
     return jget("/api/playlists");
@@ -98,6 +109,9 @@ export function useApi() {
     getDuplicates,
     recordPlay,
     getPlaybackStats,
+    getOnlineCache,
+    clearOnlineCache,
+    setOnlineCacheConfig,
     loadPlaylists,
     createPlaylist,
     deletePlaylist,

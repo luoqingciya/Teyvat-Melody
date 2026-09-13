@@ -225,32 +225,57 @@ const ok = (name, cond, extra) => {
     ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
     ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
 
-    // 6b) 故意播一个「源声明支持、实际播不了」的平台（网易云对当前源就是如此）：
-    //     应报错，并在平台筛选条上留下警示，让用户不必反复踩同一个坑。
+    // 6b) 播一个「源可能播不了」的平台：失败时应在筛选条上留下警示。
+    //     ⚠️ 不要假定某个平台一定失败 —— 源后端对平台的支持会变
+    //     （实测同一个源对网易云从「全部 unknow error」变成「可正常解析」）。
+    //     所以：失败才断言警示，能播就记 SKIP。
     const wyClicked = await cdp.eval(`(() => {
       const row = [...document.querySelectorAll('.online-row')].find((r) => /网易云/.test(r.textContent));
       if (!row) return 'no-wy-row';
       row.click();
       return 'clicked';
     })()`);
-    ok("找到并点击网易云结果", wyClicked === "clicked", wyClicked);
-    let wyState = null;
-    for (let i = 0; i < 40; i++) {
-      wyState = await cdp.eval(`(() => {
-        const toast = document.querySelector('.tm-toast-host');
-        const chip = [...document.querySelectorAll('.plat-chip')].find((c) => /网易云/.test(c.textContent));
-        return {
-          toast: toast ? toast.textContent.replace(/\\s+/g, ' ').trim().slice(0, 70) : '',
-          warned: !!(chip && chip.classList.contains('plat-chip--warn')),
-          chipTitle: chip ? (chip.getAttribute('title') || '') : '',
-        };
-      })()`);
-      if (wyState.warned) break;
-      await sleep(500);
+    if (wyClicked !== "clicked") {
+      console.log(`SKIP  未找到网易云结果（${wyClicked}），跳过失败警示断言`);
+    } else {
+      let wyState = null;
+      for (let i = 0; i < 40; i++) {
+        wyState = await cdp.eval(`(() => {
+          const toast = document.querySelector('.tm-toast-host');
+          const chip = [...document.querySelectorAll('.plat-chip')].find((c) => /网易云/.test(c.textContent));
+          const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
+          return {
+            toast: toast ? toast.textContent.replace(/\\s+/g, ' ').trim().slice(0, 70) : '',
+            warned: !!(chip && chip.classList.contains('plat-chip--warn')),
+            chipTitle: chip ? (chip.getAttribute('title') || '') : '',
+            playing: !!times[1] && times[1] !== '00:00' && times[1] !== '--:--',
+          };
+        })()`);
+        if (wyState.warned || wyState.toast) break;
+        await sleep(500);
+      }
+      console.log("  网易云结果:", JSON.stringify(wyState));
+      if (wyState?.warned) {
+        ok("播不了的平台在筛选条上留下警示（⚠）", true);
+        ok("警示的 tooltip 带上失败原因", /失败/.test(wyState.chipTitle || ""), wyState.chipTitle);
+      } else if (wyState?.toast) {
+        ok("播放失败时筛选条应留下警示", false, wyState.toast);
+      } else {
+        console.log("SKIP  网易云本次可正常播放，跳过失败警示断言（源后端支持情况会变）");
+      }
     }
-    console.log("  网易云结果:", JSON.stringify(wyState));
-    ok("播不了的平台在筛选条上留下警示（⚠）", !!wyState?.warned, JSON.stringify(wyState));
-    ok("警示的 tooltip 带上失败原因", /失败/.test(wyState?.chipTitle || ""), wyState?.chipTitle);
+
+    // 6c) 在线播放缓存：切歌/seek 会中断流，但已下的部分会由后台补完并落盘。
+    //     这里直接查应用内的缓存统计接口，确认缓存真的写成了（而不是一直停在 .part）。
+    let cacheState = null;
+    for (let i = 0; i < 90; i++) {
+      cacheState = await cdp.eval(`fetch('/api/online/cache').then((r) => r.json()).then((j) => j.data)`);
+      if (cacheState && cacheState.files > 0) break;
+      await sleep(1000);
+    }
+    console.log("  缓存状态:", JSON.stringify(cacheState));
+    ok("在线播放后音频已缓存到本地", !!cacheState && cacheState.files > 0, JSON.stringify(cacheState));
+    ok("缓存占用已统计到字节数", !!cacheState && cacheState.bytes > 0, JSON.stringify(cacheState));
 
     // 7) 设置页「关于与更新」：真实走一次 GitHub Release 检查
     await cdp.eval(`(() => {
@@ -269,13 +294,20 @@ const ok = (name, cond, extra) => {
 
     if (settingsReady) {
       const version = await cdp.eval(`(() => {
-        const el = [...document.querySelectorAll('.settings__tip')].find((p) => p.textContent.includes('当前版本') || p.textContent.includes('Current version'));
-        return el ? el.textContent.trim() : null;
+        const row = [...document.querySelectorAll('.settings__row')].find((r) => /当前版本|Current version/.test(r.textContent));
+        return row ? row.textContent.replace(/\\s+/g, ' ').trim() : null;
       })()`);
       ok("设置页显示当前版本", !!version && /\d+\.\d+\.\d+/.test(version), version);
 
+      // 在线播放缓存分组（本次新增）
+      const cacheGroup = await cdp.eval(`(() => {
+        const g = [...document.querySelectorAll('.settings__group')].find((x) => /在线播放缓存|Online playback cache/.test(x.textContent));
+        return g ? g.textContent.replace(/\\s+/g, ' ').trim().slice(0, 90) : null;
+      })()`);
+      ok("设置页有「在线播放缓存」分组", !!cacheGroup, cacheGroup || "未找到");
+
       const clickedCheck = await cdp.eval(`(() => {
-        const btn = [...document.querySelectorAll('.settings__upload')].find((b) => /检查更新|Check for updates/.test(b.textContent));
+        const btn = [...document.querySelectorAll('.settings__action')].find((b) => /检查更新|Check for updates/.test(b.textContent));
         if (!btn) return 'no-button';
         if (btn.disabled) return 'disabled';
         btn.click();
@@ -286,20 +318,19 @@ const ok = (name, cond, extra) => {
       let checkState = null;
       for (let i = 0; i < 60; i++) {
         checkState = await cdp.eval(`(() => {
-          const tips = [...document.querySelectorAll('.settings__tip')].map((p) => p.textContent.trim());
+          const texts = [...document.querySelectorAll('.settings__group')].map((g) => g.textContent.replace(/\\s+/g, ' '));
+          const joined = texts.join(' || ');
           return {
-            upToDate: tips.some((x) => /已是最新版本|up to date/i.test(x)),
-            available: tips.find((x) => /发现新版本|New version/i.test(x)) || null,
-            failed: tips.find((x) => /检查更新失败|Update check failed/i.test(x)) || null,
-            raw: tips.filter((x) => /版本|version|更新|update/i.test(x)).slice(0, 4),
+            upToDate: /已是最新版本|up to date/i.test(joined),
+            available: /发现新版本|New version/i.test(joined),
+            failed: /检查更新失败|Update check failed/i.test(joined),
           };
         })()`);
         if (checkState.upToDate || checkState.available || checkState.failed) break;
         await sleep(500);
       }
       console.log("  更新检查结果:", JSON.stringify(checkState));
-      ok("更新检查返回了明确结果（非卡在检查中）", !!(checkState?.upToDate || checkState?.available || checkState?.failed),
-        JSON.stringify(checkState?.raw));
+      ok("更新检查返回了明确结果（非卡在检查中）", !!(checkState?.upToDate || checkState?.available || checkState?.failed), JSON.stringify(checkState));
       ok("更新检查未报错", !checkState?.failed, checkState?.failed);
     }
   } catch (e) {

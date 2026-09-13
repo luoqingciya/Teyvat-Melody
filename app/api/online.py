@@ -11,12 +11,20 @@
 
 媒体仍由同源提供，故 server.py 的 CSP `media-src 'self'` 无需放宽。
 """
+import re
+import threading
 import urllib.error
 import urllib.request
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
+
+from app.services import online_cache
 
 bp = Blueprint("online", __name__)
+
+# 正在后台补完缓存的键，避免同一首重复起后台任务
+_finishing: set[str] = set()
+_finishing_lock = threading.Lock()
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -61,14 +69,118 @@ def _err(message: str, code: int):
     return jsonify({"code": code, "data": None, "message": message}), code
 
 
+_FULL_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+)")
+
+
+def _is_full_body(status: int, headers) -> bool:
+    """上游是否返回了**完整内容** —— 只有完整内容才值得写入缓存。
+
+    200 显然是完整的；206 则要看 Content-Range 是否从 0 一直到末尾
+    （Chromium 首次请求音频就是 `Range: bytes=0-`，这种也是完整内容）。
+    """
+    if status == 200:
+        return True
+    if status == 206:
+        m = _FULL_RANGE.match(str(headers.get("Content-Range") or ""))
+        if m and int(m.group(1)) == 0 and int(m.group(2)) == int(m.group(3)) - 1:
+            return True
+    return False
+
+
+def _total_bytes(headers) -> int:
+    """上游声明的总字节数（200 看 Content-Length，206 看 Content-Range 的总量）。"""
+    m = _FULL_RANGE.match(str(headers.get("Content-Range") or ""))
+    if m:
+        return int(m.group(3))
+    try:
+        return int(headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _worth_finishing(received: int, total: int) -> bool:
+    """客户端提前断开后，是否值得在后台把剩下的读完。
+
+    判断依据：已经下了不少才继续 —— 避免用户「点一下立刻切歌」时，
+    我们还在后台悄悄把整首歌拉下来（那是用户没要求的流量）。
+    """
+    if received < 1024 * 1024:  # 不足 1MB 直接放弃
+        return False
+    return total <= 0 or received >= total * 0.3
+
+
+def _finish_in_background(key: str, tmp, fh, upstream, content_type: str) -> None:
+    """客户端提前断开（seek / 切歌）时，复用同一条上游连接把剩余内容读完再转正。
+
+    这样缓存仍能完成，而且**不额外增加流量** —— 已下的部分不会白费。
+    """
+    with _finishing_lock:
+        if key in _finishing:
+            # 已有同键任务在补完，本次连接直接丢弃（避免重复下载）
+            try:
+                fh.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                upstream.close()
+            except Exception:  # noqa: BLE001
+                pass
+            online_cache.discard(tmp)
+            return
+        _finishing.add(key)
+
+    def _run():
+        ok = False
+        try:
+            while True:
+                chunk = upstream.read(_CHUNK)
+                if not chunk:
+                    break
+                fh.write(chunk)
+            ok = True
+        except Exception:  # noqa: BLE001  网络中断等：放弃这次缓存
+            ok = False
+        finally:
+            try:
+                fh.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                upstream.close()
+            except Exception:  # noqa: BLE001
+                pass
+            if ok:
+                online_cache.commit(key, tmp, content_type)
+            else:
+                online_cache.discard(tmp)
+            with _finishing_lock:
+                _finishing.discard(key)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @bp.route("/proxy", methods=["GET", "HEAD"])
 def proxy():
     url = (request.args.get("url") or "").strip()
     source = (request.args.get("source") or "").strip().lower()
+    # 稳定缓存键（平台:平台ID:音质）。CDN 地址带时效签名、每次播放都不同，
+    # 拿它当缓存键永远命不中；音频字节本身是稳定的，所以用这个键。
+    key = (request.args.get("key") or "").strip()
     if not url:
         return _err("url required", 400)
     if not url.lower().startswith(("http://", "https://")):
         return _err("only http/https url allowed", 400)
+
+    # 1) 命中磁盘缓存：直接由本地文件提供（send_file 自带 Range/206，seek 也走本地）
+    if key and request.method == "GET" and online_cache.enabled():
+        hit = online_cache.cached_path(key)
+        if hit is not None:
+            return send_file(
+                str(hit),
+                conditional=True,
+                mimetype=online_cache.mimetype_for(hit),
+                max_age=0,
+            )
 
     headers = _upstream_headers(source)
     # 透传 Range / If-Range：上游据此返回 206 + Content-Range
@@ -97,25 +209,77 @@ def proxy():
             out[name] = value
     # 上游未声明时补上，避免 <audio> 直接放弃 seek
     out.setdefault("Accept-Ranges", "bytes")
-    # URL 时效短，明确禁止任何中间层缓存
+    # 音频 URL 时效短，不让浏览器缓存；本地缓存由上面的 key 机制负责
     out["Cache-Control"] = "no-store"
 
     if request.method == "HEAD":
         upstream.close()
         return Response(b"", status=upstream.status, headers=out)
 
+    # 2) 边转发边写缓存：读完才转正，中途中断（客户端 seek/关闭）就丢弃临时文件，
+    #    绝不让半个文件冒充缓存。
+    content_type = str(upstream.headers.get("Content-Type") or "")
+    cacheable = (
+        bool(key)
+        and request.method == "GET"
+        and online_cache.enabled()
+        and _is_full_body(upstream.status, upstream.headers)
+    )
+    tmp = None
+    fh = None
+    if cacheable:
+        try:
+            tmp = online_cache.temp_path(key)
+            fh = open(tmp, "wb")
+        except OSError:
+            tmp, fh = None, None
+    received = 0
+    total = _total_bytes(upstream.headers)
+    completed = False
+
     def _iter():
+        nonlocal completed, received
         try:
             while True:
                 chunk = upstream.read(_CHUNK)
                 if not chunk:
                     break
+                received += len(chunk)
+                if fh is not None:
+                    try:
+                        fh.write(chunk)
+                    except OSError:
+                        pass  # 写缓存失败不影响本次播放
                 yield chunk
+            completed = True
         finally:
-            try:
-                upstream.close()
-            except Exception:  # noqa: BLE001
-                pass
+            if completed:
+                # 正常读完 → 转正缓存
+                try:
+                    upstream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    online_cache.commit(key, tmp, content_type)
+            elif fh is not None and _worth_finishing(received, total):
+                # 客户端提前断开（seek / 切歌）：已下了不少，交给后台读完，
+                # 缓存仍能完成且不额外增加流量（复用同一条上游连接）
+                _finish_in_background(key, tmp, fh, upstream, content_type)
+            else:
+                try:
+                    upstream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                online_cache.discard(tmp)
 
     return Response(
         stream_with_context(_iter()),
@@ -123,6 +287,30 @@ def proxy():
         headers=out,
         direct_passthrough=True,
     )
+
+
+# ---------------- 缓存管理（设置页） ----------------
+
+
+@bp.get("/cache")
+def cache_stats():
+    """缓存占用与配置（供设置页展示）。"""
+    return jsonify({"code": 200, "message": "success", "data": online_cache.stats()})
+
+
+@bp.post("/cache/clear")
+def cache_clear():
+    """清空缓存（含未完成的临时文件）。"""
+    return jsonify({"code": 200, "message": "success", "data": online_cache.clear()})
+
+
+@bp.post("/cache/config")
+def cache_config():
+    """更新缓存开关 / 容量上限；调小上限后立即淘汰到新上限内。"""
+    data = request.get_json(silent=True) or {}
+    online_cache.save_config(data)
+    online_cache.evict()
+    return jsonify({"code": 200, "message": "success", "data": online_cache.stats()})
 
 
 @bp.get("/image")

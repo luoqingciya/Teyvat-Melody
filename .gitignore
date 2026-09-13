@@ -33,6 +33,8 @@ config.json
 data/
 music/
 fonts/
+# 在线播放音频缓存（可随时清空，不入库）
+cache/
 # 自定义源脚本（第三方代码，绝不入库；开发模式下落在 <项目根>/sources/）
 /sources/
 

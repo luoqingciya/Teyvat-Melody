@@ -36,3 +36,12 @@ def data_dir() -> Path:
 def music_dir() -> Path:
     """扫描入库时保存音乐副本的目录：<根目录>/music。"""
     return app_root() / "music"
+
+
+def cache_dir() -> Path:
+    """在线播放的音频缓存目录：<根目录>/cache。
+
+    放在软件根目录，与其他运行数据一致（便于整目录搬移）；
+    可随时清空，删掉只会让下次播放重新联网取流。
+    """
+    return app_root() / "cache"

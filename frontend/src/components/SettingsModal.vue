@@ -67,6 +67,45 @@
         </label>
       </div>
 
+      <!-- 在线播放缓存 -->
+      <div class="settings__group">
+        <h4 class="settings__label">{{ t("settings.onlineCache") }}</h4>
+        <p class="settings__tip">{{ t("settings.cacheTip") }}</p>
+
+        <label class="settings__row settings__row--switch">
+          <span>{{ t("settings.cacheEnable") }}</span>
+          <input
+            class="settings__switch"
+            type="checkbox"
+            :checked="cache.enabled"
+            @change="onToggleCache($event.target.checked)"
+          />
+        </label>
+
+        <div class="settings__row">
+          <span>{{ t("settings.cacheLimit") }}</span>
+          <select
+            class="ui-select settings__select"
+            :value="cache.maxBytes"
+            :disabled="!cache.enabled"
+            @change="onCacheLimit($event.target.value)"
+          >
+            <option v-for="opt in cache.maxBytesOptions || []" :key="opt" :value="opt">
+              {{ formatBytes(opt) }}
+            </option>
+          </select>
+        </div>
+
+        <div class="settings__row">
+          <span class="settings__tip">{{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}</span>
+          <button class="ui-btn ui-btn--ghost settings__action" :disabled="!cache.bytes" @click="onClearCache">
+            {{ t("settings.cacheClear") }}
+          </button>
+        </div>
+
+        <span v-if="cacheMsg" class="settings__tip">{{ cacheMsg }}</span>
+      </div>
+
       <div class="settings__group">
         <h4 class="settings__label">{{ t("settings.advanced") }}</h4>
 
@@ -463,6 +502,7 @@ import { usePlayerStore } from "@/stores/player";
 import { useI18n } from "@/utils/i18n";
 import { registerFont, setAppFont } from "@/utils/fonts";
 import { useUpdater } from "@/composables/useUpdater";
+import { useApi } from "@/composables/useApi";
 
 const props = defineProps({ modelValue: { type: Boolean, default: false } });
 const emit = defineEmits(["update:modelValue"]);
@@ -597,6 +637,47 @@ function onSkipUpdate() {
   if (v) updater.skip(v);
 }
 
+// ---- 在线播放缓存 ----
+const { getOnlineCache, clearOnlineCache, setOnlineCacheConfig } = useApi();
+const cache = ref({ enabled: true, maxBytes: 0, maxBytesOptions: [], bytes: 0, files: 0 });
+const cacheMsg = ref("");
+
+/** 字节 → 易读单位（上限选项与占用展示共用） */
+function formatBytes(n) {
+  const v = Number(n) || 0;
+  if (v <= 0) return "0 MB";
+  if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(v % 1024 ** 3 ? 1 : 0)} GB`;
+  return `${Math.round(v / 1024 ** 2)} MB`;
+}
+
+async function loadCache() {
+  try {
+    const data = await getOnlineCache();
+    if (data) cache.value = data;
+  } catch {
+    /* 后端不可用时保持默认值，不打扰用户 */
+  }
+}
+
+async function onToggleCache(enabled) {
+  const data = await setOnlineCacheConfig({ enabled });
+  if (data) cache.value = data;
+}
+
+async function onCacheLimit(value) {
+  const data = await setOnlineCacheConfig({ maxBytes: Number(value) });
+  if (data) cache.value = data;
+}
+
+async function onClearCache() {
+  const r = await clearOnlineCache();
+  await loadCache();
+  if (r) {
+    cacheMsg.value = t("settings.cacheCleared", { size: formatBytes(r.freed) });
+    setTimeout(() => (cacheMsg.value = ""), 4000);
+  }
+}
+
 function flashSourceMsg(text, isErr) {
   sourceMsg.value = text;
   sourceMsgErr.value = !!isErr;
@@ -653,13 +734,14 @@ async function onReloadSource(s) {
   await loadSources();
 }
 
-// 打开设置弹窗时刷新源列表与版本号（导入/加载状态可能已变化）
+// 打开设置弹窗时刷新源列表、版本号与缓存占用（状态可能已变化）
 watch(
   () => props.modelValue,
   (v) => {
     if (v) {
       loadSources();
       loadAppVersion();
+      loadCache();
     }
   }
 );

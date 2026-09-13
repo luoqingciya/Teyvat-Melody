@@ -56,9 +56,21 @@ function buildMusicInfo(song) {
   return toPlain(info);
 }
 
-/** 真实 CDN URL → 同源代理地址（Range 透传与 Referer 伪装由后端代理负责） */
-function proxyUrl(url, source) {
-  return `/api/online/proxy?url=${encodeURIComponent(url)}&source=${encodeURIComponent(source || "")}`;
+/** 在线歌曲的缓存键：平台 + 平台ID + 音质。
+ *  **不能拿 CDN 地址当键** —— 它带时效签名、每次播放都不一样，永远命不中缓存；
+ *  而同一首歌的音频字节是稳定的，所以用这个键。 */
+function onlineCacheKey(song, quality) {
+  const m = song?.meta && typeof song.meta === "object" ? song.meta : {};
+  const id = m.rid ?? m.songmid ?? m.hash ?? m.id ?? m.songId ?? m.mid ?? "";
+  if (!id) return "";
+  return `${song.source || ""}:${id}:${quality || ""}`;
+}
+
+/** 真实 CDN URL → 同源代理地址（Range 透传与 Referer 伪装由后端代理负责）。
+ *  带上 key 后，后端会把音频缓存到本地，重播与 seek 都走本地文件。 */
+function proxyUrl(url, source, cacheKey) {
+  const k = cacheKey ? `&key=${encodeURIComponent(cacheKey)}` : "";
+  return `/api/online/proxy?url=${encodeURIComponent(url)}&source=${encodeURIComponent(source || "")}${k}`;
 }
 
 // 睡眠定时非响应式计时器句柄（避免进入 Pinia state）
@@ -419,7 +431,7 @@ export const usePlayerStore = defineStore("player", {
         if (token !== onlineLoadToken) return; // 已被后续切歌取代，丢弃结果
         if (!r || !r.ok || !r.url) throw new Error(r?.message || "未获取到播放地址");
         this.onlineQuality = r.quality || "";
-        getAudio().src = proxyUrl(r.url, song.source);
+        getAudio().src = proxyUrl(r.url, song.source, onlineCacheKey(song, r.quality));
         this._startPlayback(cfg, song);
       } catch (e) {
         if (token !== onlineLoadToken) return;
