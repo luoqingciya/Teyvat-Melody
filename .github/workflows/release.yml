@@ -90,6 +90,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          NOTES="docs/releases/${TAG}.md"
+          # 手写发布说明优先（面向用户的功能亮点），没有则退回自动生成的提交列表
+          if [ -f "$NOTES" ]; then
+            NOTES_ARGS=(--notes-file "$NOTES")
+            echo "使用手写发布说明：$NOTES"
+          else
+            NOTES_ARGS=(--generate-notes)
+            echo "未找到 $NOTES，使用自动生成的发布说明"
+          fi
+          # 先 view 再决定 create/edit：重跑或补发时不会因「Release 已存在」而失败
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" "${NOTES_ARGS[@]}"
+          else
+            gh release create "$TAG" --title "$TAG" "${NOTES_ARGS[@]}"
+          fi
           gh release upload "$TAG" electron-dist/*.exe electron-dist/*.zip --clobber
           echo "已发布：$TAG"
