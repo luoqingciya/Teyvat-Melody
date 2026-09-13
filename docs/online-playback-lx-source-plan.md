@@ -155,7 +155,7 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 - **Flask 代理**（新增 `app/api/online.py`）：
   - 流式转发音频，**透传 Range 头**（保证 seek/进度条可用）。
   - 按平台注入 Referer / User-Agent。
-  - 不落盘、不缓存（URL 时效短）。
+  - 上游 URL 时效短，故**不缓存 CDN 地址**；音频字节本身则按稳定键缓存到本地（见 §3.7）。
   - 现有 CSP `media-src 'self'` **无需改动**（媒体仍同源）。
 - **音质降级链**：`flac24bit → flac → 320k → 128k`，取源声明支持的最高可用音质；请求失败自动降档。
 - **换源重试**：多个启用源支持同一平台时，失败自动尝试下一源；全部失败 toast 提示。
@@ -179,13 +179,32 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 - 在线歌曲入库时标记 `online=1`（或独立内存表），使收藏 / 队列 / 最近播放 / 睡眠定时等现有机制零改动复用。
 - 切歌通知、桌面歌词、迷你播放器：在线歌曲走同一 playerStore 状态，天然适配（通知封面用 `picUrl`）。
 
+### 3.7 在线播放缓存（Phase 4 之后的追加项）— `app/services/online_cache.py`
+
+**动机**：原先代理返回 `no-store`，每播一次都从 CDN 完整重取，拖动进度条也要重新联网。
+但**放开浏览器缓存也没用** —— 代理 URL 里带的是 CDN 地址，而 CDN 签名每次播放都变，缓存键永远不重复。
+
+**做法**：渲染进程额外传一个**稳定键** `key=<平台>:<平台ID>:<音质>`（`player.js` 的 `onlineCacheKey()`），
+缓存以它为准，与 CDN 签名无关：
+
+- **命中** → `send_file(conditional=True)` 由本地文件提供，Range/seek 也走本地
+- **未命中** → 边转发边写 `<sha1>.part`，**读完才 rename 转正**；中断即丢弃（绝不让半个文件冒充缓存）
+- **客户端提前断开**（seek / 切歌）→ `_finish_in_background()` 复用同一条上游连接把剩余读完再转正，
+  缓存仍能完成且**不额外增加流量**；`_worth_finishing()` 限定「已下 ≥1MB 且 ≥30%」才继续，
+  避免用户点一下立刻切走时替其偷跑流量
+- **淘汰**：LRU（命中刷新 mtime），超出 `maxBytes` 从最旧的删；配置在 `<根目录>/cache/config.json`
+
+位置 `<根目录>/cache/audio/`（已 gitignore）。设置页「在线播放缓存」分组提供开关 / 上限 / 占用 / 清空。
+
+> 已知边界：Windows 上正在被 `send_file` 播放的文件删不掉，`clear()`/`evict()` 会静默跳过，下次再清即可。
+
 ## 4. 风险与对策
 
 | 风险 | 对策 |
 |---|---|
 | 第三方脚本安全性（可发任意网络请求） | vm 沙箱隔离（无 require/process）+ 导入时明确提示；与洛雪同一信任模型，**应用不内置任何源**，规避版权问题 |
 | 源脚本兼容性差异 | `musicInfo` 塞全平台 ID 字段；`lx.request` 的 body JSON 解析、form/formData 编码严格对齐洛雪桌面版；用 2~3 个主流第三方源脚本做兼容验证 |
-| 音频 URL 时效短 | 每次播放现取，不缓存；代理纯流式转发 |
+| 音频 URL 时效短 | 每次播放现取 CDN 地址；音频字节按**稳定键**缓存到本地（§3.7），与地址签名无关 |
 | `inited` 前脚本出错 / 超时 | 加载失败回滚 + toast 提示具体错误；单源崩溃不影响其他源（沙箱相互独立） |
 | 打包分发 | 全部逻辑在 Electron 主进程 JS，无原生依赖；PyInstaller 后端仅新增一个 Flask 蓝图，无影响 |
 

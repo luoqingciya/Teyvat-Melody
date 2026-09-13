@@ -46,6 +46,7 @@
 - **音质降级 + 换源重试**：`flac24bit → flac → 320k → 128k` 逐级降档，同一音质内多个源自动换源；全部失败给出聚合原因
 - **在线歌词（含逐字）**：四平台歌词接口；自动合并翻译成双语（复用主/副歌词分隔符约定，`showTranslation` 开关三处界面统一生效）；酷狗 **KRC 解密**后可显示**逐字卡拉OK**
 - **在线封面**：远程封面经同源图片代理加载（**不放宽 CSP**），加载失败回退默认封面；切歌通知也带封面
+- **本地缓存**：听过的在线歌曲会缓存到软件根目录 `cache/`，重播秒开、拖动进度条也走本地文件；可在设置里关闭或清空
 - **在线歌曲与本地歌曲共用同一套播放内核**：队列、播放模式、桌面歌词、迷你小窗、睡眠定时、音效均无需区分
 
 ## 项目结构
@@ -72,7 +73,7 @@
 │   ├── server.py              # Flask 应用工厂（POST /api/rpc RPC 桥 + CSP 安全头）
 │   ├── py_api.py              # 后端 API（hello / scanLibrary / saveFont / removeFont）
 │   ├── api/                   # 路由层（songs / playlists / scan / stream / online）
-│   ├── services/              # 业务逻辑（library / metadata / playlist）
+│   ├── services/              # 业务逻辑（library / metadata / playlist / online_cache 在线缓存）
 │   ├── models/                # 数据模型与统一响应格式
 │   └── utils/
 ├── frontend/                  # Vue 3 + Vite 工程
@@ -178,6 +179,25 @@ npm run test:ui     # 前置：frontend/dist 已构建；sources/ 下至少有�
   交给用户走浏览器下载反而更可控
 
 相关代码：`electron/updater.js`（版本比较 + Release 查询）、`frontend/src/composables/useUpdater.js`。
+
+## 在线播放缓存
+
+听过的在线歌曲会缓存到软件根目录 `cache/`，之后**重播秒开、拖动进度条也走本地文件**，不再重新联网。
+
+**为什么不能直接用浏览器缓存**：音乐 CDN 的地址带时效签名，**每次播放都不同**，拿它当缓存键永远命不中。
+所以渲染进程会额外传一个**稳定键**（`平台:平台ID:音质`）给代理，缓存以它为准，与 CDN 签名无关。
+
+| 场景 | 行为 |
+| --- | --- |
+| 命中缓存 | `send_file` 直接由本地文件提供（Range 天然支持，seek 走本地） |
+| 未命中 | 边转发边写 `.part`，**读完才转正**；中断即丢弃，绝不让半个文件冒充缓存 |
+| 中途 seek / 切歌 | 已下的部分**交给后台用同一条连接读完**再转正 —— 缓存仍能完成且不额外耗流量；但已下不足 1MB 或 30% 时放弃，避免替用户偷跑流量 |
+| 容量超限 | 按 LRU（命中刷新 mtime）从最久未用的开始删 |
+
+设置页「在线播放缓存」可开关、选容量上限（256 MB / 512 MB / 1 GB / 2 GB）、查看占用与一键清空。
+配置存在 `<根目录>/cache/config.json`。
+
+> 缓存目录可以随时整个删掉，只会让下次播放重新联网取流。
 
 ## CI / 发布（GitHub Actions）
 - **`.github/workflows/ci.yml`** —— 每次 push / PR 触发：
