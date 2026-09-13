@@ -25,10 +25,11 @@ function ensureHost() {
 /**
  * 弹出一条提示。
  * @param {string} message 文案
- * @param {{type?: "info"|"error", duration?: number}} [opts]
+ * @param {{type?: "info"|"error", duration?: number, action?: {label: string, onClick?: Function}}} [opts]
+ *        action 会在文案右侧渲染一个按钮（用于「前往下载」这类可操作提示）。
  * @returns {() => void} 手动关闭函数
  */
-export function toast(message, { type = "info", duration = 3200 } = {}) {
+export function toast(message, { type = "info", duration = 3200, action = null } = {}) {
   if (!message) return () => {};
   const isErr = type === "error";
   const el = document.createElement("div");
@@ -48,13 +49,10 @@ export function toast(message, { type = "info", duration = 3200 } = {}) {
     transition: "opacity .18s ease, transform .18s ease",
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
+    // 默认不拦截鼠标：提示不该挡住下面的界面。带操作按钮时才放开。
+    pointerEvents: action?.label ? "auto" : "none",
   });
-  el.textContent = message;
-  ensureHost().appendChild(el);
-  requestAnimationFrame(() => {
-    el.style.opacity = "1";
-    el.style.transform = "translateY(0)";
-  });
+  el.appendChild(document.createTextNode(message));
 
   let closed = false;
   const close = () => {
@@ -64,6 +62,40 @@ export function toast(message, { type = "info", duration = 3200 } = {}) {
     el.style.transform = "translateY(8px)";
     setTimeout(() => el.remove(), 220);
   };
+
+  if (action?.label) {
+    el.style.display = "flex";
+    el.style.alignItems = "center";
+    el.style.gap = "10px";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = action.label;
+    Object.assign(btn.style, {
+      flexShrink: "0",
+      padding: "4px 12px",
+      borderRadius: "999px",
+      border: "1px solid rgba(255, 215, 107, 0.55)",
+      background: "rgba(255, 215, 107, 0.16)",
+      color: "#FFD76B",
+      fontSize: "12px",
+      cursor: "pointer",
+    });
+    btn.addEventListener("click", () => {
+      try {
+        action.onClick?.();
+      } finally {
+        close();
+      }
+    });
+    el.appendChild(btn);
+  }
+
+  ensureHost().appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.opacity = "1";
+    el.style.transform = "translateY(0)";
+  });
+
   const timer = setTimeout(close, duration);
   return () => {
     clearTimeout(timer);

@@ -15,6 +15,8 @@ export const useConfigStore = defineStore("config", {
     resumeQueue: true, // 启动时恢复上次播放队列与当前位置（需 startupResume 开启才自动播放）
     playbackRate: 1, // 播放速度（0.5/0.75/1/1.25/1.5/2），默认 1 倍速
     glassFx: true, // 整体玻璃（毛玻璃）质感开关
+    // ---- 在线更新 ----
+    skipUpdateVersion: "", // 已忽略提示的版本号（如 "1.0.1"）；为空表示不忽略任何版本
     // ---- 全屏播放页字体 ----
     fsFontFamily: "", // 空表示跟随系统默认（或界面字体）
     fsFontSize: 16, // 歌词基准字号（px）

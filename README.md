@@ -141,8 +141,23 @@ npm test            # 两者都跑
 - **歌词**：LRC、翻译合并（容差匹配）、LX 逐字、酷狗 KRC 解密往返、组装优先级
 - **代理**：Range/206 与 `Content-Range` 透传、Referer/UA 注入、协议与参数校验、上游错误透传、封面非图片拒绝
 
-## CI / 发布（GitHub Actions）
+## 在线更新
 
+启动后会**静默检查** GitHub Release 是否有新版本（查不到 / 无新版都静默，不打扰用户）；
+发现新版时弹出可操作提示，点「前往下载」即用系统浏览器打开下载页。
+设置页「关于与更新」里也可手动检查、查看更新说明、或忽略某个版本。
+
+**为什么不用 electron-updater**：
+
+- **两种分发包都能用** —— electron-updater 只支持 NSIS 安装版（免安装 zip 没有安装位置）。
+  本方案只做「查 → 告知 → 跳转下载」，安装版与免安装版行为一致
+- **不新增运行时依赖** —— 直接调 GitHub Releases API（公开仓库无需 token）
+- **未签名时更省心** —— 静默下载的更新包是未签名 exe，会被 Windows SmartScreen 拦截；
+  交给用户走浏览器下载反而更可控
+
+相关代码：`electron/updater.js`（版本比较 + Release 查询）、`frontend/src/composables/useUpdater.js`。
+
+## CI / 发布（GitHub Actions）
 - **`.github/workflows/ci.yml`** —— 每次 push / PR 触发：
   - `frontend`：ESLint + `vite build`
   - `tests`：Ubuntu 与 Windows **双平台**跑 Node + Python 测试（尽早暴露路径差异）

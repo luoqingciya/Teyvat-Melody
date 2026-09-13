@@ -378,6 +378,46 @@
         <span v-else class="settings__tip">{{ t("settings.noSources") }}</span>
       </div>
 
+      <!-- 关于与更新：查 GitHub Release，有新版提示前往下载 -->
+      <div class="settings__group">
+        <h4 class="settings__label">{{ t("update.title") }}</h4>
+
+        <div class="settings__row">
+          <span class="settings__tip">{{ t("update.current") }}：v{{ appVersion }}</span>
+          <button class="settings__upload" :disabled="updater.checking.value" @click="onCheckUpdate">
+            {{ updater.checking.value ? t("update.checking") : t("update.check") }}
+          </button>
+        </div>
+
+        <p v-if="updater.error.value" class="settings__tip settings__tip--err">{{ updater.error.value }}</p>
+
+        <template v-else-if="updater.info.value?.ok">
+          <p v-if="!updater.info.value.hasUpdate" class="settings__tip">{{ t("update.upToDate") }}</p>
+          <template v-else>
+            <p class="settings__tip">
+              {{ t("update.available", { v: updater.info.value.latest }) }}
+              <template v-if="updater.info.value.publishedAt"> · {{ updater.info.value.publishedAt.slice(0, 10) }}</template>
+            </p>
+            <div class="settings__row">
+              <button class="settings__upload" @click="updater.openPage(updater.info.value.pageUrl)">
+                {{ t("update.download") }}
+              </button>
+              <button class="settings__upload" @click="onSkipUpdate">
+                {{ t("update.skip") }}
+              </button>
+            </div>
+            <details v-if="updater.info.value.notes" class="settings__notes">
+              <summary>{{ t("update.notes") }}</summary>
+              <pre>{{ updater.info.value.notes }}</pre>
+            </details>
+          </template>
+        </template>
+
+        <p v-if="config.skipUpdateVersion" class="settings__tip">
+          {{ t("update.skipped", { v: config.skipUpdateVersion }) }}
+        </p>
+      </div>
+
       <div class="settings__reset">
         <button class="settings__reset-btn" @click="resetSettings">{{ t("settings.reset") }}</button>
       </div>
@@ -392,6 +432,7 @@ import { useConfigStore } from "@/stores/config";
 import { usePlayerStore } from "@/stores/player";
 import { useI18n } from "@/utils/i18n";
 import { registerFont, setAppFont } from "@/utils/fonts";
+import { useUpdater } from "@/composables/useUpdater";
 
 const props = defineProps({ modelValue: { type: Boolean, default: false } });
 const emit = defineEmits(["update:modelValue"]);
@@ -503,6 +544,29 @@ const sourceMsg = ref("");
 const sourceMsgErr = ref(false);
 let sourceMsgTimer = 0;
 
+// ---- 关于与更新 ----
+const updater = useUpdater();
+const appVersion = ref("");
+
+async function loadAppVersion() {
+  const api = window.pywebview?.api;
+  if (!api || typeof api.getAppVersion !== "function") return;
+  try {
+    appVersion.value = await api.getAppVersion();
+  } catch {
+    /* 拿不到版本号不影响其它功能 */
+  }
+}
+
+function onCheckUpdate() {
+  updater.check();
+}
+
+function onSkipUpdate() {
+  const v = updater.info.value?.latest;
+  if (v) updater.skip(v);
+}
+
 function flashSourceMsg(text, isErr) {
   sourceMsg.value = text;
   sourceMsgErr.value = !!isErr;
@@ -559,11 +623,14 @@ async function onReloadSource(s) {
   await loadSources();
 }
 
-// 打开设置弹窗时刷新源列表（导入/加载状态可能已变化）
+// 打开设置弹窗时刷新源列表与版本号（导入/加载状态可能已变化）
 watch(
   () => props.modelValue,
   (v) => {
-    if (v) loadSources();
+    if (v) {
+      loadSources();
+      loadAppVersion();
+    }
   }
 );
 </script>
@@ -763,6 +830,32 @@ watch(
 }
 .settings__tip--err {
   color: var(--teyvat-danger);
+}
+.settings__upload:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* 更新说明（可折叠，避免长 markdown 撑开弹窗） */
+.settings__notes {
+  margin: var(--space-1) 0 0;
+  font-size: 12px;
+  color: var(--teyvat-text-secondary);
+}
+.settings__notes summary {
+  cursor: pointer;
+  color: var(--teyvat-text-primary);
+}
+.settings__notes pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--teyvat-bg-dark) 22%, transparent);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .settings__srcs li {
   align-items: flex-start;

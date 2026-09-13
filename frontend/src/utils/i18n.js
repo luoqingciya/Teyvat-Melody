@@ -158,6 +158,19 @@ const zh = {
   "online.playNext": "下一首播放",
   "online.addQueue": "加入队列",
   "online.unknownArtist": "未知歌手",
+  // 在线更新
+  "update.title": "关于与更新",
+  "update.current": "当前版本",
+  "update.check": "检查更新",
+  "update.checking": "检查中…",
+  "update.upToDate": "已是最新版本",
+  "update.available": "发现新版本 v{v}",
+  "update.download": "前往下载",
+  "update.skip": "忽略此版本",
+  "update.skipped": "已忽略 v{v} 的更新提示",
+  "update.checkFailed": "检查更新失败",
+  "update.unsupported": "当前环境不支持检查更新",
+  "update.notes": "更新说明",
 };
 
 const en = {
@@ -306,6 +319,19 @@ const en = {
   "online.playNext": "Play next",
   "online.addQueue": "Add to queue",
   "online.unknownArtist": "Unknown artist",
+  // Online updates
+  "update.title": "About & Updates",
+  "update.current": "Current version",
+  "update.check": "Check for updates",
+  "update.checking": "Checking…",
+  "update.upToDate": "You are up to date",
+  "update.available": "New version v{v} available",
+  "update.download": "Download",
+  "update.skip": "Skip this version",
+  "update.skipped": "Update prompts for v{v} are muted",
+  "update.checkFailed": "Update check failed",
+  "update.unsupported": "Update check is unavailable in this environment",
+  "update.notes": "Release notes",
 };
 
 export function useI18n() {

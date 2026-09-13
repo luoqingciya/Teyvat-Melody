@@ -61,6 +61,11 @@ api.getOnlinePlatforms = () => invoke("online:platforms");
 api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sources });
 // 在线歌曲歌词（翻译内联、逐字已展开，渲染进程零解析）
 api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo });
+// 检查更新：查 GitHub Release 最新版本（主进程比对版本号后回传结果）
+api.getAppVersion = () => invoke("app:version");
+api.checkUpdate = () => invoke("update:check");
+// 用系统浏览器打开更新页 / 下载链接（主进程会校验域名）
+api.openUpdatePage = (url) => invoke("update:open", { url });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

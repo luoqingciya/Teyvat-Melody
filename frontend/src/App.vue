@@ -11,15 +11,18 @@ import { setupDesktopLyricsBridge } from "@/utils/desktopLyricsBridge";
 import { setupMiniModeBridge } from "@/utils/miniModeBridge";
 import { applyCustomFonts, setAppFont } from "@/utils/fonts";
 import { songCoverUrl } from "@/utils/songCover";
+import { useUpdater } from "@/composables/useUpdater";
 
 const player = usePlayerStore();
 const library = useLibraryStore();
 const playlist = usePlaylistStore();
 const config = useConfigStore();
+const updater = useUpdater();
 
 let desktopBridgeStop = null;
 let miniBridgeStop = null;
 let watchFontsStop = null;
+let updateTimer = null;
 
 // 星尘粒子背景：App 挂载时初始化 Canvas，右/右下的星尘随机漂浮，不干扰 Vue 响应式更新。
 // 性能优化：DPR 上限降到 1.5 减少像素量；窗口隐藏时暂停绘制；去掉逐粒子 shadowBlur 开销。
@@ -176,6 +179,8 @@ onMounted(async () => {
   // 加载曲库/播放列表后，按需恢复最近一次播放
   await Promise.all([library.load(), playlist.load()]);
   resumeLastPlayed();
+  // 启动后延迟静默检查更新：避开启动竞争；查不到/没新版都静默，不打扰用户
+  updateTimer = setTimeout(() => updater.checkOnStartup(), 6000);
 });
 
 /** 启动时继续播放：优先恢复上次播放队列（当前曲目进度由断点续播精确还原），否则回退到续播最近一首 */
@@ -246,6 +251,7 @@ onBeforeUnmount(() => {
   miniBridgeStop?.();
   watchFontsStop?.();
   watchNotifyStop?.();
+  if (updateTimer) clearTimeout(updateTimer);
   applyGlobalHotkeys(false);
   delete window.__togglePlay;
   delete window.__prev;

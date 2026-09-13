@@ -9,6 +9,7 @@ const http = require("http");
 const { SourceManager } = require("./sourceManager");
 const onlineSearch = require("./onlineSearch");
 const onlineLyric = require("./onlineLyric");
+const updater = require("./updater");
 
 const BACKEND_URL = "http://127.0.0.1:5000";
 const IS_DEV = !app.isPackaged;
@@ -795,6 +796,23 @@ ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
   } catch (e) {
     return { ok: false, list: [], errors: [], availableSources: available, message: e.message };
   }
+});
+
+// ---------------- 检查更新 ----------------
+// 当前应用版本（设置页「关于」展示用）
+ipcMain.handle("app:version", () => app.getVersion());
+
+// 查 GitHub Release 的最新版本并与当前版本比对；失败不抛错，返回 ok=false 供界面提示。
+ipcMain.handle("update:check", async () => updater.checkForUpdate(app.getVersion()));
+
+// 用系统浏览器打开更新页 / 下载链接。
+// 只放行 https 且限定 GitHub 域名：该 URL 虽由主进程提供，仍收紧一层避免被当作任意跳板。
+ipcMain.handle("update:open", (_e, { url }) => {
+  if (typeof url !== "string" || !/^https:\/\/(github\.com|objects\.githubusercontent\.com)\//i.test(url)) {
+    return { ok: false };
+  }
+  shell.openExternal(url);
+  return { ok: true };
 });
 
 // ---------------- 切歌桌面通知 ----------------

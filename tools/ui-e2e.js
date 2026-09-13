@@ -215,6 +215,57 @@ const ok = (name, cond, extra) => {
     console.log("  播放状态:", JSON.stringify(play));
     ok("点击结果后该行变为当前播放项", !!play?.active, "未出现 .online-row--active");
     ok("播放未报错", !play?.toast, play?.toast);
+
+    // 7) 设置页「关于与更新」：真实走一次 GitHub Release 检查
+    await cdp.eval(`(() => {
+      const btn = [...document.querySelectorAll('.traffic-btn')].find((b) => b.title && b.title.length);
+      // 设置按钮是标题栏里带 gear 图标的那个，这里按顺序取最后一个控制按钮前的那个
+      const gear = [...document.querySelectorAll('.traffic-btn')].find((b) => b.querySelector('.app-icon'));
+      (gear || btn)?.click();
+    })()`);
+    let settingsReady = false;
+    for (let i = 0; i < 40; i++) {
+      settingsReady = await cdp.eval("!!document.querySelector('.settings')");
+      if (settingsReady) break;
+      await sleep(250);
+    }
+    ok("设置弹窗已打开", settingsReady, "未找到 .settings");
+
+    if (settingsReady) {
+      const version = await cdp.eval(`(() => {
+        const el = [...document.querySelectorAll('.settings__tip')].find((p) => p.textContent.includes('当前版本') || p.textContent.includes('Current version'));
+        return el ? el.textContent.trim() : null;
+      })()`);
+      ok("设置页显示当前版本", !!version && /\d+\.\d+\.\d+/.test(version), version);
+
+      const clickedCheck = await cdp.eval(`(() => {
+        const btn = [...document.querySelectorAll('.settings__upload')].find((b) => /检查更新|Check for updates/.test(b.textContent));
+        if (!btn) return 'no-button';
+        if (btn.disabled) return 'disabled';
+        btn.click();
+        return 'clicked';
+      })()`);
+      ok("已点击「检查更新」", clickedCheck === "clicked", clickedCheck);
+
+      let checkState = null;
+      for (let i = 0; i < 60; i++) {
+        checkState = await cdp.eval(`(() => {
+          const tips = [...document.querySelectorAll('.settings__tip')].map((p) => p.textContent.trim());
+          return {
+            upToDate: tips.some((x) => /已是最新版本|up to date/i.test(x)),
+            available: tips.find((x) => /发现新版本|New version/i.test(x)) || null,
+            failed: tips.find((x) => /检查更新失败|Update check failed/i.test(x)) || null,
+            raw: tips.filter((x) => /版本|version|更新|update/i.test(x)).slice(0, 4),
+          };
+        })()`);
+        if (checkState.upToDate || checkState.available || checkState.failed) break;
+        await sleep(500);
+      }
+      console.log("  更新检查结果:", JSON.stringify(checkState));
+      ok("更新检查返回了明确结果（非卡在检查中）", !!(checkState?.upToDate || checkState?.available || checkState?.failed),
+        JSON.stringify(checkState?.raw));
+      ok("更新检查未报错", !checkState?.failed, checkState?.failed);
+    }
   } catch (e) {
     console.log(`FAIL  验证中断  → ${e.message}`);
     process.exitCode = 1;
