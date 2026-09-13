@@ -9,7 +9,11 @@
     "dev": ".\\node_modules\\electron\\dist\\electron.exe .",
     "dev:backend": "python electron_backend.py",
     "build:frontend": "cd frontend && npm run build",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "lint": "cd frontend && npm run lint",
+    "test:js": "node tests/run.js",
+    "test:py": "uv run python tests/online-proxy.test.py",
+    "test": "npm run test:js && npm run test:py"
   },
   "devDependencies": {
     "electron": "^31.7.7",
@@ -41,12 +45,17 @@
       }
     ],
     "win": {
-      "target": "nsis",
-      "icon": "resources/TeyvatMelody.ico"
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "resources/TeyvatMelody.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     }
   }
 }
