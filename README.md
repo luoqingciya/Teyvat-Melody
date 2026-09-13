@@ -85,9 +85,11 @@
 │       └── assets/styles/     # 全局样式与主题
 ├── tests/                     # 自动化测试（Node + Python，由 CI 运行）
 │   ├── run.js                 # Node 测试统一入口
-│   ├── *.test.js              # 源宿主 / 播放链路 / 搜索 / 歌词解析
+│   ├── *.test.js              # 源宿主 / 播放链路 / 搜索 / 歌词解析 / 桥接 / 更新检查
 │   ├── online-proxy.test.py   # 音频与封面代理（Range 透传、防盗链头、参数校验）
 │   └── fixtures/              # 测试用源脚本样本（自造，非第三方）
+├── tools/                     # 本地开发工具（不进 CI）
+│   └── ui-e2e.js              # CDP 驱动真实 Electron 的界面端到端验证
 ├── .github/workflows/         # GitHub Actions（ci.yml 测试 / release.yml 打包发布）
 └── resources/                 # 打包资源（应用图标等）
 ```
@@ -119,6 +121,7 @@ npm run dev
 
 ```bash
 npm test            # Node + Python 全套（详见下方「测试」）
+npm run test:ui     # 真实界面端到端（需图形界面，改过桥接/交互后建议跑）
 ```
 
 ## 测试
@@ -140,6 +143,25 @@ npm test            # 两者都跑
 - **搜索**：四平台响应归一化、缺字段过滤、酷我伪 JSON 解析
 - **歌词**：LRC、翻译合并（容差匹配）、LX 逐字、酷狗 KRC 解密往返、组装优先级
 - **代理**：Range/206 与 `Content-Range` 透传、Referer/UA 注入、协议与参数校验、上游错误透传、封面非图片拒绝
+- **更新检查**：版本比较（含 `1.0.10 > 1.0.9` 这类字典序会判错的用例）、资产筛选、四种 API 结果
+
+### 真实界面端到端（改过桥接/交互就该跑一次）
+
+`tools/ui-e2e.js` 启动真实 Electron 并开远程调试，用 CDP 驱动渲染进程**走真实点击路径**：
+点侧栏 → 输入关键词 → 点搜索 → 点结果播放 → 打开设置检查更新。
+
+```bash
+npm run test:ui     # 前置：frontend/dist 已构建；sources/ 下至少有一个已启用源
+```
+
+**它覆盖的是 `tests/` 结构上覆盖不到的那一层**：单元测试会打桩 `electron`，因此
+**永远看不到 `contextBridge` 跨边界的行为**。曾经有一次「在线搜索报
+`An object could not be cloned.`」的缺陷，单元测试全绿、修复还放错了位置，
+就是靠这个工具才复现出来的。
+
+需要图形界面，故不进 CI。**改过前端与主进程之间的交互（桥接调用、IPC 载荷）后请跑一次。**
+
+> 受限环境（沙箱/容器）里 Chromium 的 GPU 进程起不来，脚本已自带 `--no-sandbox --disable-gpu`。
 
 ## 在线更新
 
