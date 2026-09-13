@@ -54,6 +54,7 @@ import LyricsPanel from "./LyricsPanel.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
 import { useI18n } from "@/utils/i18n";
+import { songCoverUrl } from "@/utils/songCover";
 
 const player = usePlayerStore();
 const config = useConfigStore();
@@ -68,11 +69,7 @@ const fsFontVars = computed(() => {
   return style;
 });
 
-const coverSrc = computed(() => {
-  const song = player.currentSong;
-  if (!song) return "";
-  return song.has_cover ? `/api/songs/${song.id}/cover` : "";
-});
+const coverSrc = computed(() => songCoverUrl(player.currentSong));
 
 function formatDuration(sec) {
   if (!sec || !Number.isFinite(sec)) return "00:00";

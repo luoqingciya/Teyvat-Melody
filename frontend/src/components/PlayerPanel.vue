@@ -30,6 +30,7 @@ import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
 import { useI18n } from "@/utils/i18n";
+import { songCoverUrl } from "@/utils/songCover";
 
 const player = usePlayerStore();
 const config = useConfigStore();
@@ -37,12 +38,8 @@ const { t } = useI18n();
 // 歌词统一来自 player store（切换歌曲时由 store 负责拉取与记录最近播放）
 const lines = computed(() => player.lyrics);
 
-// 有内嵌封面时指向封面接口
-const coverSrc = computed(() => {
-  const song = player.currentSong;
-  if (!song) return "";
-  return song.has_cover ? `/api/songs/${song.id}/cover` : "";
-});
+// 封面地址（本地取后端接口，在线取同源图片代理）
+const coverSrc = computed(() => songCoverUrl(player.currentSong));
 </script>
 
 <style scoped>

@@ -56,6 +56,8 @@ api.getOnlineUrl = (source, musicInfo, quality) =>
 // 在线搜索：可播放平台 + 关键词搜索
 api.getOnlinePlatforms = () => invoke("online:platforms");
 api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sources });
+// 在线歌曲歌词（翻译内联、逐字已展开，渲染进程零解析）
+api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo: cloneSafe(musicInfo) });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

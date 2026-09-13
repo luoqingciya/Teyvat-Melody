@@ -19,6 +19,8 @@ import { toastError } from "@/utils/toast";
 
 // 解析并发令牌：快速切歌时让先前的异步解析结果失效，避免旧结果覆盖新歌
 let onlineLoadToken = 0;
+// 歌词加载令牌：在线歌词要走网络，切歌更快时需丢弃过期结果
+let lyricToken = 0;
 
 /** 是否为在线歌曲 ID（形如 online:{平台}:{平台ID}） */
 function isOnlineId(id) {
@@ -178,20 +180,31 @@ export const usePlayerStore = defineStore("player", {
       useConfigStore().pushRecent(songId);
     },
 
-    /** 拉取并解析当前歌曲歌词（写入 store.lyrics，供主界面/桌面歌词共用） */
+    /** 拉取当前歌曲歌词（写入 store.lyrics，供主界面/全屏/桌面歌词共用）。
+     *  本地歌曲走后端 /api/lyrics；在线歌曲由主进程从源或平台歌词接口取，
+     *  翻译已内联进 text、逐字已展开为 words，前端零解析。 */
     async loadLyrics(id) {
       this.lyrics = [];
       if (id == null) return;
-      // 在线歌曲歌词走源的 lyric action（Phase 4 接入），此处不查本地库
-      if (isOnlineId(id)) return;
+      const token = ++lyricToken;
       this.lyricLoading = true;
       try {
-        const res = await useApi().getLyrics(id);
-        this.lyrics = res?.data?.lines ?? [];
+        if (isOnlineId(id)) {
+          const song = this.currentSong;
+          const api = window.pywebview?.api;
+          if (!song || !api || typeof api.getOnlineLyric !== "function") return;
+          const r = await api.getOnlineLyric(song.source, buildMusicInfo(song));
+          if (token !== lyricToken) return; // 已切歌，丢弃过期结果
+          this.lyrics = r?.lines ?? [];
+        } else {
+          const res = await useApi().getLyrics(id);
+          if (token !== lyricToken) return;
+          this.lyrics = res?.data?.lines ?? [];
+        }
       } catch {
-        this.lyrics = [];
+        if (token === lyricToken) this.lyrics = [];
       } finally {
-        this.lyricLoading = false;
+        if (token === lyricToken) this.lyricLoading = false;
       }
     },
 

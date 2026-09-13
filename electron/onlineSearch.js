@@ -104,7 +104,7 @@ function parseLooseJson(text) {
 // ---------------- 归一化 ----------------
 
 /** 归一化为统一歌曲结构；title/artist 与本地歌曲字段对齐，便于复用现有渲染与通知。 */
-function normalize(source, { pid, name, singer, album, duration, meta }) {
+function normalize(source, { pid, name, singer, album, duration, picUrl, meta }) {
   const title = String(name || "").trim() || "未知歌曲";
   const artist = String(singer || "").trim();
   const secs = Math.max(0, Math.round(Number(duration) || 0));
@@ -117,6 +117,8 @@ function normalize(source, { pid, name, singer, album, duration, meta }) {
     album: String(album || "").trim(),
     duration: secs,
     interval: secs,
+    // 远程封面：前端经同源图片代理加载（CSP img-src 'self'，不放宽策略）
+    picUrl: String(picUrl || "").trim(),
     title,
     artist,
     meta,
@@ -137,6 +139,8 @@ function parseTx(data) {
         singer: (it.singer || []).map((s) => s.name).filter(Boolean).join(" / "),
         album: it.albumname || it.album?.name,
         duration: it.interval,
+        // QQ 专辑封面可由 albummid 直接构造（实测该模式有效）
+        picUrl: it.albummid ? `https://y.qq.com/music/photo_new/T002R300x300M000${it.albummid}.jpg` : "",
         meta: {
           songmid,
           mid: songmid,
@@ -160,6 +164,8 @@ function parseKg(data) {
         singer: it.SingerName,
         album: it.AlbumName,
         duration: it.Duration,
+        // 酷狗返回带 {size} 占位符的模板，替换为实际尺寸（实测该模式有效）
+        picUrl: String(it.Image || "").replace("{size}", "240"),
         meta: {
           hash: it.FileHash,
           FileHash: it.FileHash,
@@ -185,6 +191,8 @@ function parseWy(data) {
         album: it.al?.name ?? it.album?.name,
         // 网易的 dt / duration 均为毫秒
         duration: Math.round((it.dt || it.duration || 0) / 1000),
+        // 网易返回的是 http 链接，升级为 https 避免混合内容
+        picUrl: String(it.al?.picUrl || it.album?.picUrl || "").replace(/^http:/, "https:"),
         meta: {
           id: it.id,
           songId: it.id,
@@ -208,6 +216,8 @@ function parseKw(data) {
         singer: it.ARTIST,
         album: it.ALBUM,
         duration: it.DURATION,
+        // 酷我封面字段常为空，有则用（无则由前端回退占位图）
+        picUrl: it.web_albumpic_short ? `https://img1.kuwo.cn/star/albumcover/${it.web_albumpic_short}` : "",
         meta: { rid, MUSICRID: it.MUSICRID, DC_TARGETID: it.DC_TARGETID, albumId: it.ALBUMID },
       });
     })

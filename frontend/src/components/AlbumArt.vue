@@ -1,14 +1,26 @@
 <template>
   <div class="album-art">
-    <img v-if="src" :src="src" class="album-art__img" alt="专辑封面" />
+    <img v-if="src && !failed" :src="src" class="album-art__img" alt="专辑封面" @error="failed = true" />
     <div v-else class="album-art__placeholder"><AppIcon name="music" :size="52" /></div>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { ref, watch } from "vue";
+
+const props = defineProps({
   src: { type: String, default: "" },
 });
+
+// 加载失败（远程封面 404 / 防盗链 / 网络异常）时回退占位图，避免出现破图。
+// 换歌后 src 变化要重置状态，否则占位图会一直留着。
+const failed = ref(false);
+watch(
+  () => props.src,
+  () => {
+    failed.value = false;
+  }
+);
 </script>
 
 <style scoped>

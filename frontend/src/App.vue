@@ -10,6 +10,7 @@ import { useConfigStore } from "@/stores/config";
 import { setupDesktopLyricsBridge } from "@/utils/desktopLyricsBridge";
 import { setupMiniModeBridge } from "@/utils/miniModeBridge";
 import { applyCustomFonts, setAppFont } from "@/utils/fonts";
+import { songCoverUrl } from "@/utils/songCover";
 
 const player = usePlayerStore();
 const library = useLibraryStore();
@@ -218,10 +219,14 @@ function watchNotification() {
       if (config.songNotification && api && typeof api.notifySong === "function") {
         const song = player.currentSong;
         try {
+          // 封面经同源代理取（本地歌曲为后端封面接口，在线歌曲为图片代理）；
+          // 主进程按此绝对地址拉取图标，失败会退回无图标通知
+          const coverPath = songCoverUrl(song);
           api.notifySong({
             title: song?.title || "",
             artist: song?.artist || "",
             songId: id,
+            iconUrl: coverPath ? `${window.location.origin}${coverPath}` : "",
           });
         } catch (_) {
           /* ignore */

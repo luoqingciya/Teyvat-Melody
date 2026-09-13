@@ -8,6 +8,7 @@ const fs = require("fs");
 const http = require("http");
 const { SourceManager } = require("./sourceManager");
 const onlineSearch = require("./onlineSearch");
+const onlineLyric = require("./onlineLyric");
 
 const BACKEND_URL = "http://127.0.0.1:5000";
 const IS_DEV = !app.isPackaged;
@@ -762,6 +763,17 @@ ipcMain.handle("online:platforms", () => {
   return { ok: true, platforms, qualitys };
 });
 
+// 在线歌曲歌词：优先用源声明的 lyric 能力，否则走平台歌词接口。
+// 主进程解析成 lines（翻译已内联进 text、逐字已展开为 words），渲染进程零解析。
+ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
+  try {
+    const r = await onlineLyric.fetchLyric(source, musicInfo || {}, sourceManager);
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, lines: [], message: e.message };
+  }
+});
+
 // 在线搜索：搜索走平台公开接口（与自定义源无关），但只查有源支持的平台。
 ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
   const available = playablePlatforms();
@@ -787,10 +799,23 @@ ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
 
 // ---------------- 切歌桌面通知 ----------------
 // 渲染进程切换歌曲时调用，用系统通知展示当前歌曲信息；点击通知聚焦主窗口。
-ipcMain.handle("notify:song", (_e, { title, artist, songId }) => {
+ipcMain.handle("notify:song", async (_e, { title, artist, songId, iconUrl }) => {
   if (!Notification.isSupported()) return { ok: false };
   const body = artist ? `${title} - ${artist}` : title;
-  const n = new Notification({ title: "提瓦特旋律", body, silent: true });
+  const opts = { title: "提瓦特旋律", body, silent: true };
+  // 在线歌曲：顺手把封面拉成 NativeImage 当通知图标（失败就退回默认，不影响通知本身）
+  if (iconUrl) {
+    try {
+      const res = await fetch(iconUrl);
+      if (res.ok) {
+        const img = nativeImage.createFromBuffer(Buffer.from(await res.arrayBuffer()));
+        if (!img.isEmpty()) opts.icon = img;
+      }
+    } catch {
+      /* 通知图标非关键，忽略 */
+    }
+  }
+  const n = new Notification(opts);
   n.on("click", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();

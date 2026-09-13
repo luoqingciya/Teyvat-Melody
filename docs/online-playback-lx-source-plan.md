@@ -204,6 +204,15 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 > - ✅ **端到端已实测通过**（2026-09-13，源 `lx-music-source-v6`）：真实平台搜索 → 源解析 → 真实 CDN 地址 → Flask 代理取流。`kg` 命中 `flac24bit`、`tx` 命中 `flac`；经代理取回的 `kg` FLAC 是 **55.4 MB 有效文件**（魔数 `fLaC`），`Range: bytes=0-1023` 返回 **206 + `Content-Range: bytes 0-1023/55397039`**，第二段 Range 内容不同 → **seek 可用**。
 > - **源兼容性差异确实存在**（正是 §4 标注的风险）：`lx-music-source-v5` 被其服务端要求升级到 v6（且更新通道禁止直接下载）；`野花音源` 的 `/v1/url` 接口 404（后端只暴露 `/v1/urlinfo`）。这类问题现在都能在设置页看到明确原因。
 
+> **Phase 4 实测补充**：
+> - **源的 `lyric` / `pic` 基本不可用**：实测 v6 源五个平台**全部只声明 `musicUrl`**，与洛雪契约一致（`lyric`/`pic` 仅 `local` 源声明）。因此**平台歌词接口才是主路径**，源的 `lyric` action 仅作优先尝试（兼容扩展了该能力的源）。
+> - **四平台歌词接口实测可用**：tx `fcg_query_lyric_new.fcg`（需 Referer `y.qq.com`）、kg 两步 `krcs.kugou.com/search` → `lyrics.kugou.com/download`、wy `api/song/lyric`（自带 `tlyric` 翻译）、kw `m.kuwo.cn/newh5/singles/songinfoandlrc`（**Referer 必须是 `m.kuwo.cn`**，用 `www` 会被拒）。
+> - **逐字真跑通（酷狗 KRC）**：`fmt=krc` 返回加密的 KRC，解密链为 base64 → 去掉 `krc1` 头 → 与固定 16 字节密钥异或 → zlib 解压，得到 `[行起始ms,行时长ms]<字偏移ms,字时长ms,0>字…`。实测《晴天》**63/63 行全带逐字**。解析后统一转成 LX 逐字文本（`toLxLyric`），下游只认一种格式。
+> - **翻译复用既有分隔符约定**：`tlyric` 以 ` | ` 内联进 `text`，主界面 / 全屏 / 桌面歌词三处的 `showTranslation` 自动生效，**渲染侧零改动**（实测网易云《Shape of You》116 行中 91 行带翻译）。
+> - **桌面歌词真逐字 + 本地插值**：当前行带 `words` 时走真逐字（字内渐变，比整字跳变更顺滑），无则回退原按行插值（行为不回归）。主进程每 500ms 才推一次进度，窗口内用 rAF 插值**只重绘主行**，避免逐字高亮以 2Hz 卡顿推进。
+> - **封面走同源图片代理**（`/api/online/image`）：CSP `img-src 'self'` **不放宽**。四平台封面来源实测：tx 由 `albummid` 构造、kg 的 `Image` 带 `{size}` 占位符需替换、wy 的 `al.picUrl`（http→https）、kw 该字段多为空（回退占位图）。`AlbumArt` 增加 `error` 回退，杜绝破图。
+> - **迷你小窗封面**需绝对地址（窗口加载自 `file://`），由 `songCoverUrl()` 出相对路径、调用方拼 origin。
+
 > **宿主健壮性修复（联调真实源时发现，已修复并回归）**：
 > 1. **`lx.request` 回调异常隔离**：源脚本在回调里抛错会沿 Node 事件回调冒泡成未捕获异常，**直接把 Electron 主进程打崩**（一个行为不端的源就能让整个应用挂掉）。现统一 `try/catch` 兜住，只记日志。
 > 2. **响应体解析以内容判定**：原先只看 `Content-Type`，遇到"JSON 文本却标 `application/octet-stream`"（实测某源后端如此）就返回 Buffer，源取 `body.code` 得到 `undefined` 而报错。现改为先看内容是否像 JSON，再看类型决定字符串/Buffer。
@@ -226,7 +235,7 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 | **Phase 1** ✅ 已完成 2026-09-13 | SourceHost 宿主 + 源管理 IPC + 设置页源管理 UI | 能导入真实第三方源脚本并完成 `inited` 握手，列表正确显示平台/音质声明 |
 | **Phase 2** ✅ 已完成 2026-09-13 | 播放链路：musicUrl 调用 + Flask 代理 + playerStore 接入 + 音质降级/换源 | 手工构造在线歌曲可完整播放、可 seek、失败自动降档 |
 | **Phase 3** ✅ 已完成 2026-09-13 | 在线搜索（四平台适配器）+ 搜索视图 | 关键词搜索 → 结果列表 → 点击播放全链路通畅 |
-| **Phase 4** | 歌词/封面/逐字解析 + 通知、桌面歌词、迷你播放器适配 | 在线歌曲歌词（含逐字）正常显示，各子窗口状态同步 |
+| **Phase 4** ✅ 已完成 2026-09-13 | 歌词/封面/逐字解析 + 通知、桌面歌词、迷你播放器适配 | 在线歌曲歌词（含逐字）正常显示，各子窗口状态同步 |
 
 ## 6. 附：关键数据结构
 

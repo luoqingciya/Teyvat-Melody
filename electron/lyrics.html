@@ -96,6 +96,17 @@
   #main .k-pending {
     color: color-mix(in srgb, var(--text, #fff) 55%, transparent);
   }
+  /* 真逐字（有 words 时间轴）时的字内渐变：高亮色从左向右推进，比整字跳变更顺滑 */
+  #main .k-partial {
+    background-image: linear-gradient(
+      90deg,
+      var(--hl, #20D9D0) var(--p, 0%),
+      color-mix(in srgb, var(--text, #fff) 55%, transparent) var(--p, 0%)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 
   /* 副歌词行：可 1 行（双行）或多行（多行模式） */
   #subs {
@@ -312,6 +323,21 @@
     return html;
   }
 
+  // 真逐字卡拉OK：每个字有自己的起止时间（在线歌词从 KRC/lxlyric 解析而来）。
+  // 字内再按其自身时长做渐变，高亮连续推进而不是整字跳变。
+  function wordsKaraokeHtml(words, eff) {
+    let html = "";
+    for (const w of words) {
+      const dur = w.d > 0 ? w.d : 0.001;
+      const frac = clamp((eff - w.t) / dur, 0, 1);
+      const chunk = escapeHtml(w.text);
+      if (frac >= 1) html += `<span class="k-done">${chunk}</span>`;
+      else if (frac <= 0) html += `<span class="k-pending">${chunk}</span>`;
+      else html += `<span class="k-partial" style="--p:${(frac * 100).toFixed(1)}%">${chunk}</span>`;
+    }
+    return html;
+  }
+
   // 根据行数模式生成副歌词文本列表
   function buildSubs(lines, ai, subText, mode) {
     if (mode === "single") return [];
@@ -358,6 +384,65 @@
     bar.style.width = pct + "%";
   }
 
+  // 主行渲染：整行高亮 / 逐字卡拉OK。
+  // 当前行带 words（真逐字时间轴）时走逐字，否则回退按行插值（行为与旧版一致）。
+  function renderMainLine(lines_, ai, eff, duration, mainText) {
+    const mainEl = $("main");
+    if ((state.options.karaokeMode || "line") !== "karaoke") {
+      mainEl.innerHTML = escapeHtml(mainText);
+      return;
+    }
+    const words = ai >= 0 && ai < lines_.length ? lines_[ai].words : null;
+    if (words && words.length) mainEl.innerHTML = wordsKaraokeHtml(words, eff);
+    else mainEl.innerHTML = karaokeHtml(mainText, lineFrac(lines_, ai, eff, duration));
+  }
+
+  // ---- 逐字卡拉OK 的本地平滑 ----
+  // 主进程每 500ms 推一次 progress；逐字高亮若只按推送刷新会明显卡顿。
+  // 这里在两次推送之间用 performance.now() 插值推进，只重绘主行（不动副行/进度条）。
+  let smooth = { at: 0, base: 0, playing: false };
+  let rafId = 0;
+
+  function effProgress() {
+    if (!smooth.playing) return smooth.base;
+    return smooth.base + Math.max(0, (performance.now() - smooth.at) / 1000);
+  }
+
+  // 播放态变化时以当前插值结果为基准重新锚定，避免暂停后再播放出现跳变
+  function reanchor(playing) {
+    const now = performance.now();
+    const cur = effProgress();
+    smooth = { at: now, base: cur, playing };
+  }
+
+  function stopSmooth() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+
+  function smoothLoop() {
+    rafId = requestAnimationFrame(smoothLoop);
+    const { lines, activeIndex: ai, duration } = state;
+    const lines_ = lines || [];
+    if (ai < 0 || ai >= lines_.length) return;
+    const offset = Number(state.options.lyricOffset) || 0;
+    const eff = effProgress() + offset / 1000;
+    const [mainText] = splitMainSub(lineText(lines_[ai]));
+    renderMainLine(lines_, ai, eff, duration, mainText);
+  }
+
+  // 仅在「逐字模式 + 正在播放 + 当前行确有 words」时启用平滑循环，其余情况保持静态渲染
+  function syncSmooth() {
+    const karaoke = (state.options.karaokeMode || "line") === "karaoke";
+    const line = state.lines && state.lines[state.activeIndex];
+    const hasWords = !!(line && line.words && line.words.length);
+    if (karaoke && state.isPlaying && hasWords) {
+      if (!rafId) rafId = requestAnimationFrame(smoothLoop);
+    } else {
+      stopSmooth();
+    }
+  }
+
   function render() {
     const { lines, activeIndex: ai, isPlaying, colors, duration } = state;
     const lines_ = lines || [];
@@ -386,7 +471,6 @@
     }
     mainEl.classList.remove("empty");
 
-    const karaokeMode = state.options.karaokeMode || "line";
     const lineMode = state.options.lineMode || "dual";
     const offset = Number(state.options.lyricOffset) || 0;
     const eff = (state.progress || 0) + offset / 1000;
@@ -396,13 +480,7 @@
     const lineChanged = ai !== displayedAI;
     displayedAI = ai;
 
-    // 主行：整行高亮 或 逐字卡拉OK
-    if (karaokeMode === "karaoke") {
-      const frac = lineFrac(lines_, ai, eff, duration);
-      mainEl.innerHTML = karaokeHtml(mainText, frac);
-    } else {
-      mainEl.innerHTML = escapeHtml(mainText);
-    }
+    renderMainLine(lines_, ai, eff, duration, mainText);
 
     // 副行 / 进度条（翻译行仅在 showTranslation 开启时显示）
     renderSubs(buildSubs(lines_, ai, showTrans ? subText : "", lineMode));
@@ -417,7 +495,14 @@
     if (payload.colors) state.colors = { ...state.colors, ...payload.colors };
     if (payload.appearance) state.appearance = { ...state.appearance, ...payload.appearance };
     if (payload.options) state.options = { ...state.options, ...payload.options };
+    // 维护本地插值锚点：带 progress 就重新锚定；仅播放态变化时按当前插值结果续锚
+    if (typeof payload.progress === "number") {
+      smooth = { at: performance.now(), base: payload.progress, playing: state.isPlaying };
+    } else if (typeof payload.isPlaying === "boolean") {
+      reanchor(payload.isPlaying);
+    }
     render();
+    syncSmooth();
   }
 
   window.lyrics.onUpdate(apply);

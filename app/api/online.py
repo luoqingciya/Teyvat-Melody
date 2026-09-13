@@ -44,6 +44,7 @@ _PASS_HEADERS = (
 
 _CHUNK = 64 * 1024
 _TIMEOUT = 15  # 上游连接/读取超时（秒）
+_IMAGE_MAX = 8 * 1024 * 1024  # 封面最大 8MB：避免本地代理被当成大文件下载器
 
 
 def _upstream_headers(source: str) -> dict:
@@ -122,3 +123,50 @@ def proxy():
         headers=out,
         direct_passthrough=True,
     )
+
+
+@bp.get("/image")
+def image():
+    """在线封面代理：远程封面经本机同源转发。
+
+    渲染进程的 CSP 是 `img-src 'self' data: blob:`，直接引用远程图片会被拦截；
+    走同源代理即可**保持 CSP 不放宽**（与音频代理同一思路）。
+    封面内容稳定，故允许浏览器缓存，减少重复流量。
+    """
+    url = (request.args.get("url") or "").strip()
+    source = (request.args.get("source") or "").strip().lower()
+    if not url:
+        return _err("url required", 400)
+    if not url.lower().startswith(("http://", "https://")):
+        return _err("only http/https url allowed", 400)
+
+    req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
+    try:
+        upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        try:
+            exc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return _err(f"upstream {exc.code}", exc.code)
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"upstream unreachable: {exc}", 502)
+
+    ctype = upstream.headers.get("Content-Type") or "image/jpeg"
+    if not ctype.lower().startswith("image/"):
+        upstream.close()
+        return _err("not an image", 415)
+
+    try:
+        data = upstream.read(_IMAGE_MAX + 1)
+    finally:
+        try:
+            upstream.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if len(data) > _IMAGE_MAX:
+        return _err("image too large", 413)
+
+    resp = Response(data, status=200, content_type=ctype)
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp

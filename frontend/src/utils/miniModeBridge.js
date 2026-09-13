@@ -2,6 +2,7 @@
 // 采用「全量（歌曲信息）+ 增量（进度/播放态）」双通道，与桌面歌词桥保持一致的模式。
 import { watch } from "vue";
 import { usePlayerStore } from "@/stores/player";
+import { songCoverUrl } from "@/utils/songCover";
 
 export function setupMiniModeBridge() {
   const player = usePlayerStore();
@@ -13,10 +14,11 @@ export function setupMiniModeBridge() {
     const song = player.currentSong;
     // 迷你小窗加载自 file://，封面需使用后端绝对地址（主窗口同源 http://127.0.0.1:5000）。
     const origin = window.location.origin || "http://127.0.0.1:5000";
+    const coverPath = songCoverUrl(song);
     return {
       title: song?.title || "",
       artist: song?.artist || "",
-      cover: song && song.has_cover ? `${origin}/api/songs/${song.id}/cover` : "",
+      cover: coverPath ? `${origin}${coverPath}` : "",
       isPlaying: player.isPlaying,
       progress: player.progress,
       duration: player.duration,
