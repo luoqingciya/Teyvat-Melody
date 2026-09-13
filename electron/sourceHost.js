@@ -11,7 +11,9 @@ const zlib = require("zlib");
 const crypto = require("crypto");
 
 const API_VERSION = "3.0.0"; // 对齐洛雪桌面版自定义源 API 版本
-const INIT_TIMEOUT = 10000; // inited 握手超时
+// inited 握手超时：真实第三方源（尤其混淆过的）常在 init 阶段做多步服务端握手，
+// 10s 在弱网/代理环境下容易误判失败，放宽到 30s。
+const INIT_TIMEOUT = 30000;
 const CALL_TIMEOUT = 20000; // 单次 request action 超时
 
 // ---------------- 脚本头部注释元数据 ----------------
@@ -30,8 +32,43 @@ function parseMeta(raw) {
 // ---------------- lx.request：无跨域 HTTP ----------------
 // options: { method, headers, body, form, formData, timeout }
 // callback(err, resp)，resp = { statusCode, statusMessage, headers, url, body }
-// body 解析规则（对齐洛雪）：Content-Type 含 json → 对象；text/*、xml、html、javascript → utf8 字符串；其余 → Buffer
+
+/**
+ * 响应体解析：**以内容判定为主、Content-Type 为辅**。
+ *
+ * 大量平台的 JSON 接口 Content-Type 都是非标值（application/x-javascript、text/plain，
+ * 甚至 application/octet-stream）。若只按 Content-Type 判定就当作二进制处理，
+ * 源脚本会拿到 Buffer 而非对象，`body.code` 之类的取值直接失败
+ * （实测：某源后端返回 JSON 却标 octet-stream，源据此抛"服务器异常"）。
+ * 因此先看内容是否像 JSON，再看类型决定字符串还是 Buffer。
+ */
+function parseBody(buf, contentType) {
+  const ct = String(contentType || "");
+  const text = buf.toString("utf8");
+  if (/^\s*[{[]/.test(text)) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      /* 形似 JSON 但解析失败：落到下面按类型处理 */
+    }
+  }
+  const isTexty = /json|javascript|text|xml|html|urlencoded/i.test(ct) || !ct;
+  const isBinary = /^(image|audio|video|font)\//i.test(ct) || /octet-stream|protobuf|zip|pdf|wasm/i.test(ct);
+  return isBinary && !isTexty ? buf : text;
+}
+
 function lxRequest(url, options = {}, callback) {
+  // 源脚本在 request 回调里抛错时，异常会沿 Node 的事件回调冒泡成**未捕获异常**，
+  // 直接把 Electron 主进程打崩（一个行为不端的源就能让整个应用挂掉）。
+  // 这里统一兜住：源自身的问题只记日志，绝不影响宿主进程。
+  const safeCallback = (err, resp) => {
+    try {
+      callback(err, resp);
+    } catch (e) {
+      console.error("[自定义源] request 回调抛出异常（已隔离）:", e && e.message);
+    }
+  };
+
   let req;
   try {
     const u = new URL(url);
@@ -70,19 +107,8 @@ function lxRequest(url, options = {}, callback) {
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
           const buf = Buffer.concat(chunks);
-          const ct = String(res.headers["content-type"] || "");
-          let body;
-          // 对齐洛雪：文本类响应一律先尝试 JSON.parse（部分平台 JSON 接口的
-          // Content-Type 是 application/x-javascript 等非标值），失败再给字符串
-          if (/json/i.test(ct)) {
-            try { body = JSON.parse(buf.toString("utf8")); } catch { body = buf.toString("utf8"); }
-          } else if (/^(image|audio|video)\//i.test(ct) || /octet-stream|protobuf/i.test(ct)) {
-            body = buf; // 明确二进制 → Buffer
-          } else {
-            const text = buf.toString("utf8");
-            try { body = JSON.parse(text); } catch { body = text; }
-          }
-          callback(null, {
+          const body = parseBody(buf, res.headers["content-type"]);
+          safeCallback(null, {
             statusCode: res.statusCode,
             statusMessage: res.statusMessage,
             headers: res.headers,
@@ -90,15 +116,15 @@ function lxRequest(url, options = {}, callback) {
             body,
           });
         });
-        res.on("error", (e) => callback(e));
+        res.on("error", (e) => safeCallback(e));
       }
     );
     req.on("timeout", () => req.destroy(new Error("request timeout")));
-    req.on("error", (e) => callback(e));
+    req.on("error", (e) => safeCallback(e));
     if (payload) req.write(payload);
     req.end();
   } catch (e) {
-    process.nextTick(() => callback(e));
+    process.nextTick(() => safeCallback(e));
   }
   // 返回取消函数（洛雪契约）
   return () => { try { req && req.destroy(); } catch {} };
@@ -136,7 +162,12 @@ const lxUtils = {
 
 // ---------------- 源实例 ----------------
 class SourceInstance {
-  constructor(id, raw) {
+  /**
+   * @param {string} id 源 id（文件名去扩展名）
+   * @param {string} raw 脚本源码
+   * @param {{initTimeout?: number}} [options] initTimeout 可覆盖默认握手超时（自检/快速失败用）
+   */
+  constructor(id, raw, options = {}) {
     this.id = id;
     this.raw = raw;
     this.meta = parseMeta(raw);
@@ -144,13 +175,25 @@ class SourceInstance {
     this.sources = null; // inited 上报的源声明
     this.updateInfo = null; // updateAlert 载荷（每次运行仅一次）
     this._updateSent = false;
+    const t = Number(options.initTimeout);
+    this.initTimeout = Number.isFinite(t) && t > 0 ? t : INIT_TIMEOUT;
   }
 
   /** 执行脚本并等待 inited。失败 reject（超时 / 同步异常 / @name 缺失）。 */
   init() {
     return new Promise((resolve, reject) => {
       if (!this.meta.name) return reject(new Error("脚本缺少 @name 头部注释"));
-      const timer = setTimeout(() => reject(new Error("源初始化超时（未收到 inited 事件）")), INIT_TIMEOUT);
+
+      let timer = null;
+      // 失败信息带上源在 init 阶段上报的 updateAlert：很多源会因"版本过低"主动拒绝初始化，
+      // 此时真实原因是更新提示而非超时，只报"超时"会让用户完全无从下手。
+      const fail = (msg) => {
+        clearTimeout(timer);
+        const hint = this.updateInfo?.log ? `；该源提示：${this.updateInfo.log}` : "";
+        const url = this.updateInfo?.updateUrl ? `（更新地址：${this.updateInfo.updateUrl}）` : "";
+        reject(new Error(msg + hint + url));
+      };
+      timer = setTimeout(() => fail("源初始化超时（未收到 inited 事件）"), this.initTimeout);
       this._resolveInited = (sources) => {
         clearTimeout(timer);
         this.sources = sources;
@@ -190,8 +233,7 @@ class SourceInstance {
       try {
         vm.runInContext(this.raw, sandbox, { filename: `${this.meta.name}.js` });
       } catch (e) {
-        clearTimeout(timer);
-        reject(new Error(`脚本执行异常：${e.message}`));
+        fail(`脚本执行异常：${e.message}`);
       }
     });
   }
@@ -223,12 +265,20 @@ class SourceInstance {
   async call(source, action, info) {
     const handler = this.handlers.request;
     if (!handler) throw new Error("源未注册 request 处理回调");
-    const p = Promise.resolve().then(() => handler({ source, action, info }));
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("源响应超时")), CALL_TIMEOUT)
-    );
-    const result = await Promise.race([p, timeout]);
-    return result;
+    // 超时定时器必须在竞速结束后清理：否则每次调用都留一个 20s 的 timer 吊住事件循环
+    //（表现为进程/自检迟迟不退出），长会话下还会持续累积。
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("源响应超时")), CALL_TIMEOUT);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => handler({ source, action, info })),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** 列表展示用摘要 */
@@ -247,4 +297,4 @@ class SourceInstance {
   }
 }
 
-module.exports = { SourceInstance, parseMeta, API_VERSION };
+module.exports = { SourceInstance, parseMeta, parseBody, API_VERSION };
