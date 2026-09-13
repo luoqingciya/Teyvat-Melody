@@ -335,6 +335,49 @@
         </ul>
       </div>
 
+      <div class="settings__group">
+        <h4 class="settings__label">{{ t("settings.sources") }}</h4>
+        <p class="settings__tip">{{ t("settings.sourcesTip") }}</p>
+
+        <div class="settings__row settings__row--col">
+          <label class="settings__upload" @click="onImportSource">
+            {{ t("settings.importSource") }}
+          </label>
+          <span v-if="sourceMsg" class="settings__tip" :class="{ 'settings__tip--err': sourceMsgErr }">{{ sourceMsg }}</span>
+        </div>
+
+        <ul v-if="sources.length" class="settings__fonts settings__srcs">
+          <li v-for="s in sources" :key="s.id" class="settings__src">
+            <div class="settings__srcinfo">
+              <div class="settings__srcname">
+                <span>{{ s.name }}</span>
+                <span v-if="s.version" class="settings__srcver">v{{ s.version }}</span>
+                <span v-if="s.updateInfo" class="settings__srcbadge settings__srcbadge--upd" :title="s.updateInfo.log">{{ t("settings.sourceUpdate") }}</span>
+              </div>
+              <div v-if="s.author" class="settings__srcmeta">{{ s.author }}</div>
+              <div v-if="s.error" class="settings__srcerr">{{ t("settings.sourceError") }}：{{ s.error }}</div>
+              <div v-else class="settings__srcbadges">
+                <span v-for="(decl, key) in s.sources" :key="key" class="settings__srcbadge" :title="(decl.qualitys || []).join(' / ')">
+                  {{ key }}<template v-if="decl.qualitys && decl.qualitys.length"> · {{ decl.qualitys[decl.qualitys.length - 1] }}</template>
+                </span>
+              </div>
+            </div>
+            <div class="settings__srcops">
+              <button class="settings__fontdel" :title="t('settings.sourceReload')" :aria-label="t('settings.sourceReload')" @click="onReloadSource(s)">↻</button>
+              <button class="settings__fontdel" :title="t('settings.sourceRemove')" :aria-label="t('settings.sourceRemove')" @click="onRemoveSource(s)">✕</button>
+              <input
+                class="settings__switch"
+                type="checkbox"
+                :checked="s.enabled"
+                :title="s.enabled ? t('settings.sourceDisable') : t('settings.sourceEnable')"
+                @change="onToggleSource(s, $event.target.checked)"
+              />
+            </div>
+          </li>
+        </ul>
+        <span v-else class="settings__tip">{{ t("settings.noSources") }}</span>
+      </div>
+
       <div class="settings__reset">
         <button class="settings__reset-btn" @click="resetSettings">{{ t("settings.reset") }}</button>
       </div>
@@ -343,14 +386,14 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import AppModal from "./AppModal.vue";
 import { useConfigStore } from "@/stores/config";
 import { usePlayerStore } from "@/stores/player";
 import { useI18n } from "@/utils/i18n";
 import { registerFont, setAppFont } from "@/utils/fonts";
 
-defineProps({ modelValue: { type: Boolean, default: false } });
+const props = defineProps({ modelValue: { type: Boolean, default: false } });
 const emit = defineEmits(["update:modelValue"]);
 
 const config = useConfigStore();
@@ -453,6 +496,76 @@ function resetSettings() {
   player.setPlaybackRate(config.playbackRate);
   player.playMode = "list";
 }
+
+// ---- 自定义源（洛雪源脚本） ----
+const sources = ref([]);
+const sourceMsg = ref("");
+const sourceMsgErr = ref(false);
+let sourceMsgTimer = 0;
+
+function flashSourceMsg(text, isErr) {
+  sourceMsg.value = text;
+  sourceMsgErr.value = !!isErr;
+  clearTimeout(sourceMsgTimer);
+  sourceMsgTimer = setTimeout(() => (sourceMsg.value = ""), 4000);
+}
+
+async function loadSources() {
+  const api = window.pywebview?.api;
+  if (!api || typeof api.listSources !== "function") return;
+  try {
+    const r = await api.listSources();
+    sources.value = r?.list ?? [];
+  } catch {
+    sources.value = [];
+  }
+}
+
+async function onImportSource() {
+  const api = window.pywebview?.api;
+  if (!api || typeof api.importSource !== "function") return;
+  try {
+    const r = await api.importSource();
+    if (r?.canceled) return;
+    if (r?.ok) {
+      flashSourceMsg(t("settings.sourceImportOk", { n: r.source.name }));
+      await loadSources();
+    } else {
+      flashSourceMsg(t("settings.sourceImportFail", { m: r?.message || "unknown" }), true);
+    }
+  } catch (e) {
+    flashSourceMsg(t("settings.sourceImportFail", { m: e.message }), true);
+  }
+}
+
+async function onRemoveSource(s) {
+  const api = window.pywebview?.api;
+  if (!api) return;
+  await api.removeSource(s.id);
+  await loadSources();
+}
+
+async function onToggleSource(s, enabled) {
+  const api = window.pywebview?.api;
+  if (!api) return;
+  s.enabled = enabled;
+  await api.toggleSource(s.id, enabled);
+}
+
+async function onReloadSource(s) {
+  const api = window.pywebview?.api;
+  if (!api) return;
+  await api.reloadSource(s.id);
+  await loadSources();
+}
+
+// 打开设置弹窗时刷新源列表（导入/加载状态可能已变化）
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (v) loadSources();
+  }
+);
 </script>
 
 <style scoped>
@@ -642,5 +755,76 @@ function resetSettings() {
   border-color: var(--teyvat-danger);
   color: var(--teyvat-danger);
   background: color-mix(in srgb, var(--teyvat-danger) 10%, transparent);
+}
+.settings__tip {
+  margin: 0;
+  font-size: 12px;
+  color: var(--teyvat-text-secondary);
+}
+.settings__tip--err {
+  color: var(--teyvat-danger);
+}
+.settings__srcs li {
+  align-items: flex-start;
+}
+.settings__src {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.settings__srcinfo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.settings__srcname {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--teyvat-text-primary);
+}
+.settings__srcver {
+  font-size: 11px;
+  color: var(--teyvat-text-secondary);
+}
+.settings__srcmeta {
+  font-size: 11px;
+  color: var(--teyvat-text-secondary);
+}
+.settings__srcerr {
+  font-size: 11px;
+  color: var(--teyvat-danger);
+  word-break: break-all;
+}
+.settings__srcbadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.settings__srcbadge {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--teyvat-card-border);
+  background: color-mix(in srgb, var(--teyvat-card-bg) 14%, transparent);
+  color: var(--teyvat-text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+.settings__srcbadge--upd {
+  border-color: var(--teyvat-gold);
+  color: var(--teyvat-gold);
+}
+.settings__srcops {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.settings__switch {
+  accent-color: var(--teyvat-gold);
+  cursor: pointer;
 }
 </style>

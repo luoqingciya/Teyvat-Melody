@@ -1,11 +1,12 @@
 // Teyvat Melody - Electron 主进程
 // 职责：spawn Python(Flask) 后端子进程、主窗口、系统托盘、单实例、
 //       透明桌面歌词窗口、IPC 路由（窗口控制 / 歌词推送 / Flask RPC 代理）。
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, Notification, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, Notification, nativeImage, dialog } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const { SourceManager } = require("./sourceManager");
 
 const BACKEND_URL = "http://127.0.0.1:5000";
 const IS_DEV = !app.isPackaged;
@@ -700,6 +701,39 @@ ipcMain.handle("hotkeys:apply", (_e, { enabled }) => {
   return { ok: true, registered: applyGlobalHotkeys(!!enabled) };
 });
 
+// ---------------- 自定义源（洛雪源脚本宿主） ----------------
+// sources/ 目录与 sources.json 都在软件根目录（dataRoot），符合根目录存储约定。
+const sourceManager = new SourceManager(dataRoot());
+
+ipcMain.handle("source:list", () => ({ ok: true, list: sourceManager.list() }));
+
+ipcMain.handle("source:import", async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: "导入自定义源脚本",
+    filters: [{ name: "洛雪自定义源", extensions: ["js"] }],
+    properties: ["openFile"],
+  });
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  try {
+    const summary = await sourceManager.importFrom(r.filePaths[0]);
+    return { ok: true, source: summary };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+});
+
+ipcMain.handle("source:remove", async (_e, { id }) => {
+  return { ok: await sourceManager.remove(id) };
+});
+
+ipcMain.handle("source:toggle", async (_e, { id, enabled }) => {
+  return { ok: await sourceManager.toggle(id, enabled) };
+});
+
+ipcMain.handle("source:reload", async (_e, { id }) => {
+  return { ok: await sourceManager.reload(id) };
+});
+
 // ---------------- 切歌桌面通知 ----------------
 // 渲染进程切换歌曲时调用，用系统通知展示当前歌曲信息；点击通知聚焦主窗口。
 ipcMain.handle("notify:song", (_e, { title, artist, songId }) => {
@@ -755,6 +789,8 @@ if (!gotLock) {
     createTray();
     // 恢复上次的桌面歌词可见性（默认隐藏）
     if (loadLyricSettings().visible) lyricsSetVisible(true);
+    // 加载自定义源（沙箱执行源脚本，inited 握手）
+    sourceManager.init().catch((e) => console.error("自定义源初始化失败:", e.message));
     app.on("activate", () => {
       if (mainWindow) mainWindow.show();
     });

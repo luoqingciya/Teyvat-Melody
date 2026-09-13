@@ -44,6 +44,12 @@ api.setFullscreen = (flag) => invoke("win:fullscreen", { flag: !!flag });
 // 迷你模式：小窗置顶播放器
 api.toggleMini = () => invoke("mini:toggle");
 api.pushMiniState = (snapshot) => invoke("mini:push", { snapshot: cloneSafe(snapshot) });
+// 自定义源管理（洛雪源脚本）
+api.listSources = () => invoke("source:list");
+api.importSource = () => invoke("source:import");
+api.removeSource = (id) => invoke("source:remove", { id });
+api.toggleSource = (id, enabled) => invoke("source:toggle", { id, enabled: !!enabled });
+api.reloadSource = (id) => invoke("source:reload", { id });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

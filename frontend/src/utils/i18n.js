@@ -125,6 +125,19 @@ const zh = {
   "settings.removeFont": "删除字体",
   "settings.reset": "恢复默认设置",
   "settings.done": "完成",
+  // 设置：自定义源（洛雪源脚本）
+  "settings.sources": "自定义源",
+  "settings.sourcesTip": "兼容洛雪音乐自定义源脚本（.js），源为第三方代码，请自行确认可信后导入",
+  "settings.importSource": "导入源脚本",
+  "settings.noSources": "尚未导入自定义源",
+  "settings.sourceRemove": "删除源",
+  "settings.sourceReload": "重新加载",
+  "settings.sourceEnable": "启用",
+  "settings.sourceDisable": "禁用",
+  "settings.sourceError": "加载失败",
+  "settings.sourceUpdate": "有更新",
+  "settings.sourceImportOk": "源「{n}」导入成功",
+  "settings.sourceImportFail": "源导入失败：{m}",
 };
 
 const en = {
@@ -240,6 +253,19 @@ const en = {
   "settings.removeFont": "Remove font",
   "settings.reset": "Reset to defaults",
   "settings.done": "Done",
+  // Settings: custom sources (LX Music source scripts)
+  "settings.sources": "Custom Sources",
+  "settings.sourcesTip": "Compatible with LX Music custom source scripts (.js). Sources are third-party code — import only if you trust them",
+  "settings.importSource": "Import source script",
+  "settings.noSources": "No custom sources yet",
+  "settings.sourceRemove": "Remove",
+  "settings.sourceReload": "Reload",
+  "settings.sourceEnable": "Enable",
+  "settings.sourceDisable": "Disable",
+  "settings.sourceError": "Failed to load",
+  "settings.sourceUpdate": "Update available",
+  "settings.sourceImportOk": "Source \"{n}\" imported",
+  "settings.sourceImportFail": "Import failed: {m}",
 };
 
 export function useI18n() {
