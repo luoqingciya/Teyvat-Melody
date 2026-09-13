@@ -216,6 +216,17 @@ npm run build
 
 > **免安装包 / 便携目录都是自包含的可运行应用**：运行数据（`data/`、`music/`、`.appdata/`）保存在目录自身根目录，因此**解压或复制整个文件夹到任意位置即可直接运行**，无需安装程序——适合免安装分发或替换到现有运行根目录。
 
+### 卸载方式
+
+| 分发包 | 怎么卸载 |
+|---|---|
+| **安装版**（exe） | 安装目录下的 `Uninstall TeyvatMelody.exe`；或「设置 → 应用 → 已安装的应用」里搜「提瓦特旋律」 |
+| **免安装版 / 便携目录** | **没有卸载程序是正常的** —— 直接删除整个文件夹即可 |
+
+> 两种分发方式的**数据是通用的**：把旧目录里的 `data/`、`music/`、`.appdata/`、`sources/` 复制到新目录下即可无缝接续（音乐库、歌单、设置、自定义源都会保留）。
+>
+> 应用根目录会随包附带一份 `使用说明.txt`（由 `build.extraFiles` 写入），用户不必去翻文档。
+
 electron-builder 配置见 `package.json` 的 `build` 字段（`extraResources.backend` → 主进程以 `process.resourcesPath/backend/TeyvatBackend.exe` 启动）。主进程通过 [`electron/main.js`](electron/main.js) 的 `findBackendExe` **递归查找** `resources/backend/` 下的 `TeyvatBackend.exe`，兼容「单文件」与「PyInstaller COLLECT 目录」两种形态。
 
 ## 架构说明

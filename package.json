@@ -45,6 +45,12 @@
         "to": "resources/TeyvatMelody.ico"
       }
     ],
+    "extraFiles": [
+      {
+        "from": "resources/app-readme.txt",
+        "to": "README.txt"
+      }
+    ],
     "win": {
       "target": [
         "nsis",
@@ -56,7 +62,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "uninstallDisplayName": "提瓦特旋律 Teyvat Melody"
     }
   }
 }
