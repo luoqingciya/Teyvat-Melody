@@ -171,6 +171,15 @@ const zh = {
   "update.skipped": "已忽略 v{v} 的更新提示",
   "update.checkFailed": "检查更新失败",
   "update.unsupported": "当前环境不支持检查更新",
+  "update.downloadInstall": "下载并安装",
+  "update.download": "下载",
+  "update.downloading": "正在下载更新包… {p}%",
+  "update.noAsset": "该版本没有可下载的安装包",
+  "update.downloadFailed": "下载失败",
+  "update.installFailed": "启动安装向导失败",
+  "update.installLaunched": "已启动安装向导，按提示完成即可（会提示关闭本程序）",
+  "update.revealed": "已下载完成，已在资源管理器中打开所在文件夹",
+  "update.openPage": "打开发布页",
   "update.notes": "更新说明",
 };
 
@@ -333,6 +342,15 @@ const en = {
   "update.skipped": "Update prompts for v{v} are muted",
   "update.checkFailed": "Update check failed",
   "update.unsupported": "Update check is unavailable in this environment",
+  "update.downloadInstall": "Download & install",
+  "update.download": "Download",
+  "update.downloading": "Downloading update… {p}%",
+  "update.noAsset": "This release has no downloadable package",
+  "update.downloadFailed": "Download failed",
+  "update.installFailed": "Could not launch the installer",
+  "update.installLaunched": "Installer launched - follow its prompts (it will ask to close this app)",
+  "update.revealed": "Download complete - the folder has been opened in Explorer",
+  "update.openPage": "Open release page",
   "update.notes": "Release notes",
 };
 

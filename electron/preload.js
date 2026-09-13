@@ -64,6 +64,14 @@ api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, mus
 // 检查更新：查 GitHub Release 最新版本（主进程比对版本号后回传结果）
 api.getAppVersion = () => invoke("app:version");
 api.checkUpdate = () => invoke("update:check");
+// 下载更新包（主进程流式写入临时目录，进度经 update:progress 回传）
+api.downloadUpdate = (url, name) => invoke("update:download", { url, name });
+// 拉起安装包；reveal=true 时改为在资源管理器里定位（免安装版下载 zip 后自行解压）
+api.installUpdate = (filePath, reveal) => invoke("update:install", { path: filePath, reveal: !!reveal });
+api.onUpdateProgress = (cb) => {
+  ipcRenderer.on("update:progress", (_e, p) => cb(p));
+  return () => ipcRenderer.removeAllListeners("update:progress");
+};
 // 用系统浏览器打开更新页 / 下载链接（主进程会校验域名）
 api.openUpdatePage = (url) => invoke("update:open", { url });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）

@@ -2,7 +2,7 @@
 //
 // 覆盖版本比较、下载项筛选、以及与 GitHub API 交互的三种结果（有新版 / 已最新 / 失败）。
 // 通过注入 fetchImpl 打桩，不依赖外网。
-const { checkForUpdate, isNewer, pickAssets } = require("../electron/updater");
+const { checkForUpdate, isNewer, pickAssets, pickAssetFor } = require("../electron/updater");
 
 const ok = (name, cond, extra) => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${!cond && extra ? "  → " + extra : ""}`);
@@ -49,6 +49,14 @@ const RELEASE = {
     ok("只保留 exe / zip", assets.length === 2 && assets.every((a) => /\.(exe|zip)$/.test(a.name)), JSON.stringify(assets.map((a) => a.name)));
     ok("保留下载地址与大小", assets[0].url.includes("github.com") && assets[0].size === 100);
     ok("无 assets 时返回空数组", pickAssets(undefined).length === 0);
+
+    // ---- pickAssetFor：按分发方式挑要下载的包 ----
+    const both = pickAssets(RELEASE.assets); // Setup exe + zip
+    ok("安装版优先 Setup exe（下完可直接拉起安装向导）", /\.exe$/i.test(pickAssetFor(both, true)?.name || ""), JSON.stringify(pickAssetFor(both, true)));
+    ok("免安装版优先 zip（避免在系统里多装一份）", /\.zip$/i.test(pickAssetFor(both, false)?.name || ""), JSON.stringify(pickAssetFor(both, false)));
+    ok("只有 exe 时免安装版也退回 exe", /\.exe$/i.test(pickAssetFor([{ name: "a-Setup-1.0.0.exe", url: "u", size: 1 }], false)?.name || ""));
+    ok("只有 zip 时安装版也退回 zip", /\.zip$/i.test(pickAssetFor([{ name: "a.zip", url: "u", size: 1 }], true)?.name || ""));
+    ok("无可用资产时返回 null", pickAssetFor([], true) === null && pickAssetFor(undefined, false) === null);
 
     // ---- checkForUpdate：有新版 ----
     const up = await checkForUpdate("1.0.0", { fetchImpl: fakeFetch({ json: RELEASE }) });

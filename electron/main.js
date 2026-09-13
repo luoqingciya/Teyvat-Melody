@@ -6,6 +6,8 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const { Transform, Readable } = require("stream");
+const { pipeline } = require("stream/promises");
 const { SourceManager } = require("./sourceManager");
 const onlineSearch = require("./onlineSearch");
 const onlineLyric = require("./onlineLyric");
@@ -800,12 +802,88 @@ ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
   }
 });
 
-// ---------------- 检查更新 ----------------
+// ---------------- 检查更新 / 下载 / 拉起安装 ----------------
+// 更新包下到系统临时目录，不污染用户目录；安装完成后由安装程序自行清理。
+const UPDATE_DIR = () => path.join(app.getPath("temp"), "TeyvatMelody-update");
+// 只允许从 GitHub 的发布域名下载，避免这段能力被当成任意下载器
+const UPDATE_URL_OK = /^https:\/\/(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)\//i;
+
+/** 是否为「安装版」：electron-builder 安装时会在安装目录写入卸载程序 */
+function isInstalledBuild() {
+  if (!app.isPackaged) return false;
+  try {
+    return fs.readdirSync(path.dirname(process.execPath)).some((f) => /^Uninstall .*\.exe$/i.test(f));
+  } catch {
+    return false;
+  }
+}
+
 // 当前应用版本（设置页「关于」展示用）
 ipcMain.handle("app:version", () => app.getVersion());
 
 // 查 GitHub Release 的最新版本并与当前版本比对；失败不抛错，返回 ok=false 供界面提示。
-ipcMain.handle("update:check", async () => updater.checkForUpdate(app.getVersion()));
+// 顺带回传「是否安装版」与「按分发方式挑好的下载项」，界面据此决定按钮文案与后续动作。
+ipcMain.handle("update:check", async () => {
+  const r = await updater.checkForUpdate(app.getVersion());
+  if (!r.ok) return r;
+  const installed = isInstalledBuild();
+  return { ...r, installed, asset: updater.pickAssetFor(r.assets, installed) };
+});
+
+// 下载更新包（流式写入 + 进度事件）。渲染进程用 update:progress 监听进度。
+ipcMain.handle("update:download", async (e, { url, name }) => {
+  if (!UPDATE_URL_OK.test(url || "")) return { ok: false, message: "下载地址不被允许" };
+  const dir = UPDATE_DIR();
+  const safe = path.basename(String(name || "update.bin")).replace(/[^\w.-]/g, "_") || "update.bin";
+  const dest = path.join(dir, safe);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const res = await fetch(url);
+    if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+    const total = Number(res.headers.get("content-length")) || 0;
+    let received = 0;
+    let lastSent = 0;
+    const report = (percent) => {
+      try {
+        e.sender.send("update:progress", { percent, received, total });
+      } catch {
+        /* 窗口可能已关闭 */
+      }
+    };
+    // 用 Transform 统计字节：既能报进度，又不破坏 pipeline 的背压处理
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        received += chunk.length;
+        const now = Date.now();
+        if (now - lastSent > 300) {
+          lastSent = now;
+          report(total ? Math.round((received / total) * 100) : 0);
+        }
+        cb(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), counter, fs.createWriteStream(dest));
+    report(100);
+    return { ok: true, path: dest, size: received };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+});
+
+// 拉起安装包：仅允许运行下载目录里的文件。
+// reveal=true 时不运行，而是在资源管理器里定位（免安装版下载 zip 后由用户自行解压）。
+ipcMain.handle("update:install", async (_e, { path: filePath, reveal }) => {
+  const dir = path.resolve(UPDATE_DIR());
+  const full = path.resolve(String(filePath || ""));
+  if (full !== dir && !full.startsWith(dir + path.sep)) return { ok: false, message: "路径不被允许" };
+  if (!fs.existsSync(full)) return { ok: false, message: "安装包不存在" };
+  if (reveal) {
+    shell.showItemInFolder(full);
+    return { ok: true, revealed: true };
+  }
+  const err = await shell.openPath(full);
+  return err ? { ok: false, message: err } : { ok: true };
+});
 
 // 用系统浏览器打开更新页 / 下载链接。
 // 只放行 https 且限定 GitHub 域名：该 URL 虽由主进程提供，仍收紧一层避免被当作任意跳板。

@@ -40,6 +40,21 @@ function pickAssets(assets) {
 }
 
 /**
+ * 按当前分发方式挑选要下载的资产。
+ * - **安装版**（安装目录里有卸载程序）：优先 Setup exe —— 下完可直接拉起安装向导
+ * - **免安装版**：优先 zip —— 装 exe 会在系统里多出一份，与当前目录的便携形态冲突
+ * @param {Array<{name:string,url:string,size:number}>} assets
+ * @param {boolean} installed 是否安装版
+ * @returns {{name:string,url:string,size:number}|null}
+ */
+function pickAssetFor(assets, installed) {
+  const list = assets || [];
+  const setup = list.find((a) => /setup/i.test(a.name) && /\.exe$/i.test(a.name)) || list.find((a) => /\.exe$/i.test(a.name));
+  const zip = list.find((a) => /\.zip$/i.test(a.name));
+  return (installed ? setup || zip : zip || setup) || null;
+}
+
+/**
  * 查询最新 Release 并与当前版本比对。
  * @param {string} currentVersion 当前版本（app.getVersion()）
  * @param {{fetchImpl?: Function, apiUrl?: string}} [opts] 便于测试注入
@@ -75,4 +90,4 @@ async function checkForUpdate(currentVersion, opts = {}) {
   }
 }
 
-module.exports = { checkForUpdate, isNewer, pickAssets, REPO, API_URL };
+module.exports = { checkForUpdate, isNewer, pickAssets, pickAssetFor, REPO, API_URL };

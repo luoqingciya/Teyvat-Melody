@@ -340,9 +340,9 @@
         <p class="settings__tip">{{ t("settings.sourcesTip") }}</p>
 
         <div class="settings__row settings__row--col">
-          <label class="settings__upload" @click="onImportSource">
+          <button class="ui-btn ui-btn--ghost settings__action" @click="onImportSource">
             {{ t("settings.importSource") }}
-          </label>
+          </button>
           <span v-if="sourceMsg" class="settings__tip" :class="{ 'settings__tip--err': sourceMsgErr }">{{ sourceMsg }}</span>
         </div>
 
@@ -378,13 +378,22 @@
         <span v-else class="settings__tip">{{ t("settings.noSources") }}</span>
       </div>
 
-      <!-- 关于与更新：查 GitHub Release，有新版提示前往下载 -->
+      <!-- 关于与更新：查 GitHub Release → 下载 → 拉起安装向导 -->
       <div class="settings__group">
         <h4 class="settings__label">{{ t("update.title") }}</h4>
 
         <div class="settings__row">
-          <span class="settings__tip">{{ t("update.current") }}：v{{ appVersion }}</span>
-          <button class="settings__upload" :disabled="updater.checking.value" @click="onCheckUpdate">
+          <span>{{ t("update.current") }}</span>
+          <span class="settings__value">v{{ appVersion || "—" }}</span>
+        </div>
+
+        <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
+        <div class="settings__row settings__row--end">
+          <button
+            class="ui-btn ui-btn--ghost settings__action"
+            :disabled="updater.checking.value"
+            @click="onCheckUpdate"
+          >
             {{ updater.checking.value ? t("update.checking") : t("update.check") }}
           </button>
         </div>
@@ -394,18 +403,39 @@
         <template v-else-if="updater.info.value?.ok">
           <p v-if="!updater.info.value.hasUpdate" class="settings__tip">{{ t("update.upToDate") }}</p>
           <template v-else>
-            <p class="settings__tip">
-              {{ t("update.available", { v: updater.info.value.latest }) }}
-              <template v-if="updater.info.value.publishedAt"> · {{ updater.info.value.publishedAt.slice(0, 10) }}</template>
-            </p>
-            <div class="settings__row">
-              <button class="settings__upload" @click="updater.openPage(updater.info.value.pageUrl)">
-                {{ t("update.download") }}
+            <div class="settings__notice">
+              <span class="settings__notice-title">{{ t("update.available", { v: updater.info.value.latest }) }}</span>
+              <span v-if="updater.info.value.publishedAt" class="settings__notice-date">
+                {{ updater.info.value.publishedAt.slice(0, 10) }}
+              </span>
+            </div>
+
+            <!-- 下载进度 -->
+            <div v-if="updater.downloading.value" class="settings__progress">
+              <div class="settings__progress-bar" :style="{ width: updater.progress.value + '%' }"></div>
+              <span class="settings__progress-text">{{ t("update.downloading", { p: updater.progress.value }) }}</span>
+            </div>
+
+            <div class="settings__actions">
+              <button
+                class="ui-btn settings__action"
+                :disabled="updater.downloading.value"
+                @click="updater.downloadAndInstall()"
+              >
+                {{ updater.info.value.installed ? t("update.downloadInstall") : t("update.download") }}
               </button>
-              <button class="settings__upload" @click="onSkipUpdate">
+              <button
+                class="ui-btn ui-btn--ghost settings__action"
+                :disabled="updater.downloading.value"
+                @click="updater.openPage(updater.info.value.pageUrl)"
+              >
+                {{ t("update.openPage") }}
+              </button>
+              <button class="ui-btn ui-btn--ghost settings__action" @click="onSkipUpdate">
                 {{ t("update.skip") }}
               </button>
             </div>
+
             <details v-if="updater.info.value.notes" class="settings__notes">
               <summary>{{ t("update.notes") }}</summary>
               <pre>{{ updater.info.value.notes }}</pre>
@@ -646,13 +676,29 @@ watch(
   flex-direction: column;
   gap: var(--space-3);
 }
+/* 分组之间加分隔线：设置项变多后，靠留白已不足以区分板块 */
+.settings__group + .settings__group {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--teyvat-card-border);
+}
 .settings__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 1px;
-  color: var(--teyvat-text-secondary);
-  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--teyvat-text-primary);
+}
+/* 标题前一道主题色装饰条，层级一眼可辨 */
+.settings__label::before {
+  content: "";
+  flex-shrink: 0;
+  width: 3px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(180deg, var(--teyvat-gold), var(--teyvat-blue));
 }
 .settings__row {
   display: flex;
@@ -716,6 +762,10 @@ watch(
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
+}
+/* 只有控件、不需要左侧标签的行（按钮自己说明用途） */
+.settings__row--end {
+  justify-content: flex-end;
 }
 .settings__upload {
   display: inline-flex;
@@ -856,6 +906,69 @@ watch(
   border-radius: var(--radius-md);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* ---- 行内右侧的值（版本号等） ---- */
+.settings__value {
+  color: var(--teyvat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 按钮组：允许换行，避免窄窗里挤爆 ---- */
+.settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.settings__action {
+  padding: 6px 14px;
+  font-size: 12px;
+}
+
+/* ---- 新版本提示条 ---- */
+.settings__notice {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--teyvat-gold) 32%, transparent);
+  background: color-mix(in srgb, var(--teyvat-gold) 10%, transparent);
+}
+.settings__notice-title {
+  font-size: 13px;
+  color: var(--teyvat-gold);
+}
+.settings__notice-date {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--teyvat-text-secondary);
+}
+
+/* ---- 下载进度 ---- */
+.settings__progress {
+  position: relative;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.settings__progress-bar {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--teyvat-gold), var(--teyvat-blue));
+  transition: width var(--t-base);
+}
+.settings__progress-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--teyvat-text-primary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 .settings__srcs li {
   align-items: flex-start;
