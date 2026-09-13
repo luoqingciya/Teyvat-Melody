@@ -11,6 +11,14 @@ import threading
 from pathlib import Path
 from urllib.parse import quote
 
+# Windows 控制台默认 cp1252，直接打印中文测试名会 UnicodeEncodeError ——
+# 表现为「测试全部通过却因打印失败而退出码非 0」。统一改用 UTF-8 输出。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001  旧版本或非常规 stdout（如被重定向为 None）时忽略
+    pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.server import create_app  # noqa: E402
