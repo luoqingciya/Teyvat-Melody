@@ -14,6 +14,7 @@ import { useApi } from "@/composables/useApi";
 import { getProgress, saveProgress, clearProgress } from "@/utils/playbackProgress";
 import { saveLastQueue, loadLastQueue, clearLastQueue } from "@/utils/lastQueue";
 import { toastError } from "@/utils/toast";
+import { toPlain } from "@/utils/bridge";
 
 // ---------------- 在线歌曲（第三方源）辅助 ----------------
 
@@ -32,7 +33,8 @@ function isOnlineSong(song) {
   return !!song && (song.online === true || isOnlineId(song.id));
 }
 
-/** 把在线歌曲展开成源脚本期望的 musicInfo：携带全量平台 ID，最大化兼容不同源脚本取值习惯 */
+/** 把在线歌曲展开成源脚本期望的 musicInfo：携带全量平台 ID，最大化兼容不同源脚本取值习惯。
+ *  返回**普通值**（非 reactive）：跨 contextBridge 传给主进程前必须去代理，否则结构化克隆会拒绝。 */
 function buildMusicInfo(song) {
   const info = song.meta && typeof song.meta === "object" ? { ...song.meta } : {};
   const name = song.name ?? song.title;
@@ -46,7 +48,7 @@ function buildMusicInfo(song) {
   if (info.mid == null && info.songmid != null) info.mid = info.songmid;
   if (info.hash == null && info.FileHash != null) info.hash = info.FileHash;
   if (info.FileHash == null && info.hash != null) info.FileHash = info.hash;
-  return info;
+  return toPlain(info);
 }
 
 /** 真实 CDN URL → 同源代理地址（Range 透传与 Referer 伪装由后端代理负责） */

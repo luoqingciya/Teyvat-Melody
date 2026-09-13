@@ -215,7 +215,9 @@ Electron 主进程 (electron/main.js)
 ## 安全与开发约定
 
 - **CSP**：Flask 统一返回 `Content-Security-Policy`（`script-src 'self'` 等），页面不得含内联脚本；新增内联 JS 会触发浏览器拦截（需移除外链或放宽策略）
-- **IPC 序列化**：Electron `ipcRenderer.invoke` 用结构化克隆，**Vue reactive 对象不能直接传**（会抛 `could not be cloned`）——桥接/兼容层已统一做 JSON 深拷贝，新代码沿用该模式
+- **IPC 序列化（两道边界，别搞混）**：参数跨桥接会经过两次结构化克隆，**Vue reactive 对象是 Proxy，两道都过不去**（报 `An object could not be cloned.`）
+  1. **渲染进程主世界 → preload 隔离世界**：由 `contextBridge` 复制参数，**发生在 preload 代码执行之前** —— 所以在 preload 里做深拷贝救不了它，**必须在调用侧先去代理**（用 `utils/bridge.js` 的 `toPlain()`，既有 `desktopLyricsBridge` / `miniModeBridge` 也是这个做法）
+  2. **preload 隔离世界 → 主进程**：由 `electron/preload.js` 的 `invoke` 统一深拷贝兜住，新增 preload 方法无需各自处理
 - **preload**：contextBridge 暴露对象必须显式枚举方法，不能使用 Proxy（动态 `get` 陷阱在隔离环境下不生效）
 - **Electron 后端**：`electron_backend.py` 只跑 Flask，不创建任何窗口；托盘 / 窗口控制全部由主进程负责
 - **Flask 必须 `threaded=True`**：音频流是长连接，单线程下一条流会占满 worker，把 `/api/songs` 等请求全部堵死

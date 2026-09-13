@@ -115,6 +115,7 @@ import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useI18n } from "@/utils/i18n";
 import { toast, toastError } from "@/utils/toast";
+import { toPlain } from "@/utils/bridge";
 
 const PLATFORMS = [
   { key: "kw", label: "酷我" },
@@ -190,7 +191,8 @@ async function doSearch() {
   try {
     const api = window.pywebview?.api;
     if (!api || typeof api.searchOnline !== "function") throw new Error("当前环境不支持在线搜索");
-    const r = await api.searchOnline(kw, picked.value);
+    // picked 是 reactive 数组：跨 contextBridge 前必须转成普通值，否则结构化克隆会拒绝
+    const r = await api.searchOnline(kw, toPlain(picked.value));
     if (token !== searchToken) return; // 已被后续搜索取代
     searched.value = true;
     if (!r || !r.ok) {

@@ -1,11 +1,16 @@
 // preload 桥接层自检：node tests/preload.test.js
 //
-// 守住一个真实缺陷：渲染进程传给 IPC 的 Vue reactive 对象（Proxy）无法被结构化克隆，
-// Electron 会抛 "An object could not be cloned."，表现为界面上「搜索失败」之类的报错。
-// 桥接层必须统一做 JSON 深拷贝（见 README「安全与开发约定」）。
+// ⚠️ 覆盖范围说明（很重要，别误读）：
+// 参数跨桥接有**两道**边界，本测试只覆盖第 2 道：
+//   1) 渲染进程主世界 → preload 隔离世界：由 contextBridge 用结构化克隆复制参数，
+//      发生在 preload 代码执行之前 —— **本测试无法覆盖**（打桩 electron 就绕过了它）。
+//      这道边界要求调用侧先把 reactive 对象转成普通值（见 frontend/src/utils/bridge.js
+//      的 toPlain），真正能验证它的是 electron/__test-ui.js（真实 Electron + 真实界面）。
+//   2) preload 隔离世界 → 主进程：由 preload 的 invoke 统一深拷贝 —— **本测试覆盖这道**。
 //
-// 这里用 Proxy 模拟 Vue reactive —— 与 Electron 一致，structuredClone 对 Proxy 会抛
-// DOMException；并让假的 ipcRenderer 真的调用 structuredClone，从而真实复现该约束。
+// 背景：曾误以为「在 preload 里做深拷贝」就能解决界面上的
+// "An object could not be cloned."，实际位置错了，真因在第 1 道边界。
+// 这里用 Proxy 模拟 Vue reactive（structuredClone 对 Proxy 会抛 DOMException）。
 const Module = require("module");
 const path = require("path");
 
@@ -62,6 +67,8 @@ const reactiveArr = (a) => new Proxy(a, {});
     }
     ok("反向校验：裸 Proxy 确实不可结构化克隆（测试前提成立）", threw);
 
+    // 以下均**直接调用 preload 暴露的方法**（因此绕过了第 1 道 contextBridge 边界），
+    // 验证的是第 2 道边界：preload 出口是否把载荷深拷贝后才交给 ipcRenderer.invoke。
     const cases = [
       ["searchOnline（reactive 数组）", () => exposed.searchOnline("晴天", reactiveArr(["kw", "kg"]))],
       ["getOnlineUrl（reactive 对象）", () => exposed.getOnlineUrl("kw", reactiveObj({ rid: "1" }), "320k")],
