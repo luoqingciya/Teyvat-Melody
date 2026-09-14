@@ -86,11 +86,16 @@
 │       └── assets/styles/     # 全局样式与主题
 ├── tests/                     # 自动化测试（Node + Python，由 CI 运行）
 │   ├── run.js                 # Node 测试统一入口
-│   ├── *.test.js              # 源宿主 / 播放链路 / 搜索 / 歌词解析 / 桥接 / 更新检查
-│   ├── online-proxy.test.py   # 音频与封面代理（Range 透传、防盗链头、参数校验）
+│   ├── *.test.js              # 源宿主 / 播放链路 / 搜索 / 歌词解析 / 桥接 / 更新检查 / 数据目录选址
+│   ├── run.py                 # Python 测试统一入口
+│   ├── online-proxy.test.py   # 音频与封面代理（Range 透传、防盗链头、参数校验）+ 在线缓存与下载
+│   ├── migration.test.py      # 老版本数据库升级（列补齐、数据不丢、索引生效、幂等）
+│   ├── paths.test.py          # 数据目录选址（安装版 / 免安装版 / 开发模式）
+│   ├── backend-port.test.py   # 后端端口命令行契约
 │   └── fixtures/              # 测试用源脚本样本（自造，非第三方）
 ├── tools/                     # 本地开发工具（不进 CI）
-│   └── ui-e2e.js              # CDP 驱动真实 Electron 的界面端到端验证
+│   ├── ui-e2e.js              # CDP 驱动真实 Electron 的界面端到端验证
+│   └── verify-frozen-paths.py # 验证**打包后**的数据目录选址（安装版不进安装目录）
 ├── .github/workflows/         # GitHub Actions（ci.yml 测试 / release.yml 打包发布）
 └── resources/                 # 打包资源（应用图标等）
 ```
@@ -133,7 +138,7 @@ npm run test:ui     # 真实界面端到端（需图形界面，改过桥接/交
 
 ```bash
 npm run test:js     # Node 侧：源宿主 / 播放链路 / 搜索 / 歌词解析
-npm run test:py     # Python 侧：音频与封面代理
+npm run test:py     # Python 侧：代理与缓存 / 数据库升级 / 数据目录选址
 npm test            # 两者都跑
 ```
 
@@ -141,9 +146,15 @@ npm test            # 两者都跑
 
 - **源宿主**：沙箱隔离（无 `require`/`process`）、`inited` 握手与超时、回调异常隔离、响应体解析（非标 Content-Type）
 - **播放链路**：音质降级链、偏好音质优先、多源换源、全失败错误聚合、禁用源后失效
-- **搜索**：四平台响应归一化、缺字段过滤、酷我伪 JSON 解析
-- **歌词**：LRC、翻译合并（容差匹配）、LX 逐字、酷狗 KRC 解密往返、组装优先级
+- **搜索**：四平台响应归一化、缺字段过滤、酷我伪 JSON 解析、双重转义还原
+- **歌词**：LRC、翻译合并（容差匹配）、LX 逐字、酷狗 KRC 解密往返、组装优先级、本地缓存命中与过期
 - **代理**：Range/206 与 `Content-Range` 透传、Referer/UA 注入、协议与参数校验、上游错误透传、封面非图片拒绝
+- **在线缓存与下载**：稳定键命中、`0..末尾` 的 Range 视为完整、淘汰 LRU、进度统计含分片、
+  并发下载同键被拒、进度表容量上限
+- **数据库升级**：老结构库跑迁移后列补齐、旧数据/收藏/歌单/历史一条不少、旧歌仍算本地歌曲、
+  唯一索引生效、重复执行幂等
+- **数据目录选址**：安装版放 `%LOCALAPPDATA%`（**绝不放安装目录**）、免安装版放软件目录、
+  开发模式放项目根；两边（Electron / Python）规则必须一致
 - **更新检查**：版本比较（含 `1.0.10 > 1.0.9` 这类字典序会判错的用例）、资产筛选、四种 API 结果
 
 ### 真实界面端到端（改过桥接/交互就该跑一次）
@@ -163,6 +174,22 @@ npm run test:ui     # 前置：frontend/dist 已构建；sources/ 下至少有�
 需要图形界面，故不进 CI。**改过前端与主进程之间的交互（桥接调用、IPC 载荷）后请跑一次。**
 
 > 受限环境（沙箱/容器）里 Chromium 的 GPU 进程起不来，脚本已自带 `--no-sandbox --disable-gpu`。
+
+### 打包后的数据目录（改过 `paths.py` / `dataRoot.js` / 打包配置就该跑一次）
+
+`tests/paths.test.py` 与 `tests/data-root.test.js` 只能测**纯函数**（把 frozen/exe/LOCALAPPDATA
+当参数注入）。真正打包运行时才会走到的部分 —— `sys.frozen`、PyInstaller onedir 布局、
+环境变量读取 —— 由 `tools/verify-frozen-paths.py` 覆盖：它把打包好的后端分别放进
+**模拟安装版**（同级有 `Uninstall *.exe`）与**模拟免安装版**两棵树里各跑一次，
+看数据库实际落在哪里。用临时 `LOCALAPPDATA`，全程不碰真实用户目录。
+
+```bash
+uv run pyinstaller build.spec --noconfirm --distpath backend-dist --workpath build-temp
+python tools/verify-frozen-paths.py
+```
+
+> **为什么必须验**：安装版若把数据写回安装目录，升级时会被卸载程序 `RMDir /r $INSTDIR` 删光 ——
+> 这正是 v1.0.6 修掉的「每次更新丢光全部数据」。这条规则不能只靠单元测试兜着。
 
 ## 在线更新
 
