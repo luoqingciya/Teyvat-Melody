@@ -1,12 +1,23 @@
 // 数据根目录选址自检：node tests/data-root.test.js
 //
-// 背景：安装版升级时，NSIS 安装器会先跑旧版卸载程序，而它会 `RMDir /r $INSTDIR`。
-// 数据若放在安装目录里就会**每次更新都丢光**。所以这里锁死「安装版数据放
-// %LOCALAPPDATA%\TeyvatMelody、免安装版放安装目录」这条规则。
+// 规则：**数据一律放在软件目录（EXE 同级）** —— 免安装版与安装版都一样，
+// 整个目录自包含、可整体搬移。
+//
+// ⚠️ 安装版的数据放在安装目录里，前提是 NSIS 的 customRemoveFiles 宏能在升级时
+// 保住这些目录（否则升级时旧版卸载程序 `RMDir /r $INSTDIR` 会把数据删光 —— 这是
+// 真实发生过的缺陷）。那段 NSIS 代码由 tools/verify-nsis-keep-data.py 用真实 makensis
+// 验证，本文件只管选址规则。
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { APP_DIR_NAME, LEGACY_DATA_DIRS, installDir, isInstalledBuild, resolveDataRoot } = require("../electron/dataRoot");
+const {
+  APP_DIR_NAME,
+  DATA_DIRS,
+  installDir,
+  isInstalledBuild,
+  resolveDataRoot,
+  legacyLocalAppDataRoot,
+} = require("../electron/dataRoot");
 
 const ok = (name, cond, extra) => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${!cond && extra ? "  → " + extra : ""}`);
@@ -29,7 +40,15 @@ const portable = makeTree({ installed: false });
 const installed = makeTree({ installed: true });
 const fakeLocal = path.join(installed.tmp, "LocalAppData");
 
-ok("installDir：取 exe 所在目录", installDir(portable.backendExe) === portable.exeDir, installDir(portable.backendExe));
+ok(
+  "installDir：从后端 exe 也能上溯到软件根目录",
+  installDir(portable.backendExe) === portable.exeDir,
+  installDir(portable.backendExe)
+);
+ok(
+  "installDir：主进程 exe（就在根下）也能定位到根",
+  installDir(path.join(portable.exeDir, "TeyvatMelody.exe")) === portable.exeDir
+);
 ok("安装版判定：有 Uninstall *.exe → true", isInstalledBuild(installed.exeDir) === true);
 ok("免安装版判定：没有卸载程序 → false", isInstalledBuild(portable.exeDir) === false);
 ok("安装版判定：目录不存在时不抛错", isInstalledBuild(path.join(portable.tmp, "nope")) === false);
@@ -39,32 +58,27 @@ ok(
   resolveDataRoot({ isDev: true, exePath: portable.backendExe, projectRoot: "/proj" }) === "/proj"
 );
 ok(
-  "免安装版：数据根目录 = 安装目录（整个文件夹可搬移）",
-  resolveDataRoot({ isDev: false, exePath: portable.backendExe, localAppData: fakeLocal, projectRoot: "/proj" }) ===
-    portable.exeDir
+  "免安装版：数据根目录 = 软件目录（整个文件夹可搬移）",
+  resolveDataRoot({ isDev: false, exePath: portable.backendExe, projectRoot: "/proj" }) === portable.exeDir
 );
 ok(
-  "安装版：数据根目录 = %LOCALAPPDATA%/TeyvatMelody（升级卸载都不碰）",
-  resolveDataRoot({ isDev: false, exePath: installed.backendExe, localAppData: fakeLocal, projectRoot: "/proj" }) ===
-    path.join(fakeLocal, APP_DIR_NAME)
-);
-ok(
-  "安装版：拿不到 LOCALAPPDATA 时退回安装目录（不崩、也能找到数据）",
-  resolveDataRoot({ isDev: false, exePath: installed.backendExe, localAppData: undefined, projectRoot: "/proj" }) ===
-    installed.exeDir
-);
-ok(
-  "安装版的数据目录一定不在安装目录内（这正是防丢数据的关键）",
-  !resolveDataRoot({ isDev: false, exePath: installed.backendExe, localAppData: fakeLocal, projectRoot: "/proj" }).startsWith(
-    installed.exeDir
-  )
+  "安装版：数据根目录也 = 软件目录（跟 EXE 同级）",
+  resolveDataRoot({ isDev: false, exePath: installed.backendExe, projectRoot: "/proj" }) === installed.exeDir
 );
 
 ok(
-  "需要迁移的历史数据目录齐全（data/music/sources/cache/.appdata）",
-  ["data", "music", "sources", "cache", ".appdata"].every((d) => LEGACY_DATA_DIRS.includes(d)),
-  JSON.stringify(LEGACY_DATA_DIRS)
+  "需要随应用搬移 / 保留的数据目录齐全",
+  ["data", "music", "sources", "cache", ".appdata"].every((d) => DATA_DIRS.includes(d)),
+  JSON.stringify(DATA_DIRS)
 );
+
+// v1.0.6 的旧位置（仅用于识别，好把数据搬回来）
+ok(
+  "v1.0.6 旧位置识别：%LOCALAPPDATA%/TeyvatMelody",
+  legacyLocalAppDataRoot(fakeLocal) === path.join(fakeLocal, APP_DIR_NAME),
+  legacyLocalAppDataRoot(fakeLocal)
+);
+ok("v1.0.6 旧位置识别：拿不到 LOCALAPPDATA 时返回 null（不崩）", legacyLocalAppDataRoot(undefined) === null);
 
 fs.rmSync(portable.tmp, { recursive: true, force: true });
 fs.rmSync(installed.tmp, { recursive: true, force: true });

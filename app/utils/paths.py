@@ -1,28 +1,29 @@
 # -*- coding: utf-8 -*-
 """应用根目录 / 数据目录的统一定位。
 
-**为什么安装版不能把数据放在安装目录里**：安装版升级时，NSIS 安装器会先执行旧版的
-卸载程序（`app-builder-lib/templates/nsis/installSection.nsh` 的 `uninstallOldVersion`），
-而卸载程序会 `RMDir /r $INSTDIR`（`uninstaller.nsh`）—— 把安装目录整个删掉。
-数据若放在里面，**每次更新都会丢光**（这是真实发生过的缺陷）。
+**数据一律放在软件目录（EXE 同级）** —— 免安装版与安装版都一样，这样整个目录是
+自包含的：可以整体搬移、复制、备份，卸载也只是删掉这一个目录。
 
-于是按分发方式分开：
+⚠️ 但安装版有个陷阱必须知道：**升级时安装器会先执行旧版的卸载程序**，而它默认会
+`RMDir /r $INSTDIR` —— 把安装目录整个删掉，数据跟着没。所以「数据放在安装目录里」
+这条约定**必须**配合 `resources/installer.nsh` 的 `customRemoveFiles` 宏才能成立
+（该宏在升级时保留 data/music/sources/cache/.appdata，只在真正卸载时才删）。
+那段 NSIS 代码由 `tools/verify-nsis-keep-data.py` 用真实 makensis 编译验证 ——
+改这里的选址逻辑、或改那个 NSIS 宏，都要把该脚本跑一遍。
 
-  - **免安装版 / 开发模式** → 软件根目录（`<根目录>/data`、`music`…），
-    整个文件夹可以随意搬移 —— 这正是免安装版的立足点。
-  - **安装版** → `%LOCALAPPDATA%/TeyvatMelody`，升级与卸载都不会碰它。
+开发模式（未打包）下没有安装目录的概念，数据放项目根目录。
 
-判据：exe 同级目录里有没有 `Uninstall *.exe`（只有安装版才带卸载程序）。
-旧版本遗留在安装目录里的数据，由 Electron 主进程在启动时搬到新位置
-（见 `electron/main.js` 的 `migrateLegacyData`）——后端启动时读到的已经是搬好的目录。
+本文件的选址规则与 Electron 主进程的 `electron/dataRoot.js` 必须**完全一致**
+（两边各自要独立算出数据目录），各自都有自检：
+`tests/paths.test.py` / `tests/data-root.test.js`。
 """
 
-import os
 import sys
 from pathlib import Path
 from typing import Optional
 
-# 安装版的数据目录名（%LOCALAPPDATA% 下）
+# 安装版的数据目录名。**仅用于识别 v1.0.6 的旧位置**（那一版曾把安装版数据放在
+# %LOCALAPPDATA%/TeyvatMelody 以躲开卸载程序），启动时会把它搬回软件目录。
 APP_DIR_NAME = "TeyvatMelody"
 
 # 「这里是软件根目录」的标记：resources 下有 Electron 的 app.asar 或后端目录。
@@ -55,6 +56,7 @@ def is_installed_build(exe: Optional[Path] = None, frozen: Optional[bool] = None
     """是否为「安装版」：exe 同级存在 `Uninstall *.exe`。
 
     免安装版解压出来没有卸载程序，所以这个判据天然区分两种分发方式。
+    数据位置两者相同，这个判据现在只用于「更新时该下哪个包」。
     """
     frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
     if not frozen:
@@ -66,25 +68,11 @@ def is_installed_build(exe: Optional[Path] = None, frozen: Optional[bool] = None
         return False
 
 
-def _resolve_app_root(
-    *,
-    frozen: bool,
-    exe: Path,
-    local_app_data: Optional[str],
-    project_root: Path,
-) -> Path:
+def _resolve_app_root(*, frozen: bool, exe: Path, project_root: Path) -> Path:
     """决定数据根目录（纯函数，便于自检）。"""
     if not frozen:
         return project_root
-    install = _install_dir(exe)
-    if is_installed_build(exe, frozen=True):
-        if not local_app_data:
-            # 拿不到 LOCALAPPDATA（非 Windows / 异常环境）就退回安装目录本身 ——
-            # 注意不能再套一层 TeyvatMelody 子目录：那样数据仍在安装目录内、升级照样被删，
-            # 只是多了一层让人困惑的嵌套。这里退化为「老行为」，至少能正常用。
-            return install
-        return (Path(local_app_data) / APP_DIR_NAME).resolve()
-    return install
+    return _install_dir(exe)
 
 
 def app_root() -> Path:
@@ -92,7 +80,6 @@ def app_root() -> Path:
     return _resolve_app_root(
         frozen=bool(getattr(sys, "frozen", False)),
         exe=Path(sys.executable),
-        local_app_data=os.environ.get("LOCALAPPDATA"),
         project_root=Path(__file__).resolve().parent.parent.parent,
     )
 

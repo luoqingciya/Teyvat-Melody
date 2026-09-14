@@ -26,8 +26,9 @@ const dataRootUtil = require("./dataRoot");
 
 // ---------------- 数据根目录 ----------------
 // 选址规则见 electron/dataRoot.js（与后端 app/utils/paths.py 必须一致）。
-// 安装版的数据放 %LOCALAPPDATA%\TeyvatMelody —— 因为安装目录在升级时会被
-// 旧版卸载程序 `RMDir /r $INSTDIR` 整个删掉，数据放里面每次更新都会丢光。
+// **数据一律放在软件目录（EXE 同级）**，整个目录自包含、可整体搬移。
+// ⚠️ 安装版靠 resources/installer.nsh 的 customRemoveFiles 宏在升级时保住这些数据目录 ——
+//    否则升级时旧版卸载程序会 `RMDir /r $INSTDIR` 把数据删光（真实发生过的缺陷）。
 function installDir() {
   return dataRootUtil.installDir(process.execPath);
 }
@@ -40,48 +41,61 @@ function isInstalledBuild() {
 
 /** 数据根目录（data / music / cache / sources / .appdata 都放它下面） */
 function dataRoot() {
-  // 只读环境变量，不用 app.getPath —— 本函数在 app ready 之前就会被调用（重定向 userData），
-  // 拿不到 LOCALAPPDATA 时由 resolveDataRoot 退回安装目录
   return dataRootUtil.resolveDataRoot({
     isDev: IS_DEV,
     exePath: process.execPath,
-    localAppData: process.env.LOCALAPPDATA,
     projectRoot: path.resolve(__dirname, ".."),
   });
 }
 
-/** 把老版本遗留在安装目录里的数据搬到新位置（只在安装版、且新位置还没有数据时执行）。 */
-function migrateLegacyData(newRoot, legacyRoot) {
-  if (!legacyRoot || path.resolve(newRoot) === path.resolve(legacyRoot)) return [];
-  if (fs.existsSync(path.join(newRoot, "data"))) return []; // 新位置已有数据 → 不动，避免覆盖
-  const moved = [];
-  for (const name of dataRootUtil.LEGACY_DATA_DIRS) {
-    const from = path.join(legacyRoot, name);
-    if (!fs.existsSync(from)) continue;
-    const to = path.join(newRoot, name);
-    try {
-      fs.mkdirSync(newRoot, { recursive: true });
+/**
+ * 把老位置里的数据搬到当前数据根目录（只在根目录还没有数据时执行）。
+ *
+ * 目前唯一的「老位置」是 v1.0.6 的 `%LOCALAPPDATA%\TeyvatMelody` ——
+ * 那一版为了躲开卸载程序把安装版数据放在那里，本版又改回软件目录，
+ * 所以升级上来时要搬回来，否则老用户会「看起来数据全没了」。
+ *
+ * 用复制而非移动：万一搬移过程中出问题，原数据还在（代价是占双份空间，用户可自行删除）。
+ */
+function migrateLegacyData(newRoot, legacyRoots) {
+  if (fs.existsSync(path.join(newRoot, "data"))) return []; // 已有数据 → 不动，避免覆盖
+  for (const legacyRoot of legacyRoots) {
+    if (!legacyRoot || path.resolve(newRoot) === path.resolve(legacyRoot)) continue;
+    if (!fs.existsSync(path.join(legacyRoot, "data"))) continue;
+    const moved = [];
+    for (const name of dataRootUtil.DATA_DIRS) {
+      const from = path.join(legacyRoot, name);
+      if (!fs.existsSync(from)) continue;
+      const to = path.join(newRoot, name);
       try {
-        fs.renameSync(from, to); // 同盘：瞬间完成
-      } catch {
-        // 跨盘符 rename 会失败（装在 D:、数据在 C: 时很常见）→ 退回复制
-        fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: false });
+        fs.mkdirSync(newRoot, { recursive: true });
+        try {
+          fs.renameSync(from, to); // 同盘：瞬间完成
+        } catch {
+          // 跨盘符 rename 会失败（装在 D:、数据在 C: 时很常见）→ 退回复制
+          fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: false });
+        }
+        moved.push(name);
+      } catch (e) {
+        console.warn(`[migrate] 迁移 ${name} 失败：${e.message}`);
       }
-      moved.push(name);
-    } catch (e) {
-      console.warn(`[migrate] 迁移 ${name} 失败：${e.message}`);
+    }
+    if (moved.length) {
+      console.log(`[migrate] 已把 ${legacyRoot} 里的数据搬到 ${newRoot}：${moved.join(", ")}`);
+      return moved;
     }
   }
-  if (moved.length) console.log(`[migrate] 已把历史数据搬到 ${newRoot}：${moved.join(", ")}`);
-  return moved;
+  return [];
 }
 
 // 把所有 Electron 端数据（桌面歌词设置、前端 localStorage 的配置/音量/播放进度/队列/歌词锁定等）
 // 统一放到数据根目录下。必须在创建任何窗口之前调用 app.setPath 重定向 userData。
 (function ensureUserDataUnderRoot() {
   const root = dataRoot();
-  // 安装版：先把旧版本遗留在安装目录里的数据搬出来（必须在 app.setPath 之前）
-  if (isInstalledBuild()) migrateLegacyData(root, installDir());
+  // 先把 v1.0.6 留在 %LOCALAPPDATA% 的数据搬回软件目录（必须在 app.setPath 之前）
+  if (!IS_DEV) {
+    migrateLegacyData(root, [dataRootUtil.legacyLocalAppDataRoot(process.env.LOCALAPPDATA)]);
+  }
 
   const prevUserData = app.getPath("userData");
   const newUserData = path.join(root, ".appdata");

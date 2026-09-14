@@ -90,7 +90,7 @@
 │   ├── run.py                 # Python 测试统一入口
 │   ├── online-proxy.test.py   # 音频与封面代理（Range 透传、防盗链头、参数校验）+ 在线缓存与下载
 │   ├── migration.test.py      # 老版本数据库升级（列补齐、数据不丢、索引生效、幂等）
-│   ├── paths.test.py          # 数据目录选址（安装版 / 免安装版 / 开发模式）
+│   ├── paths.test.py          # 数据目录选址（免安装版 / 安装版 / 开发模式）
 │   ├── backend-port.test.py   # 后端端口命令行契约
 │   └── fixtures/              # 测试用源脚本样本（自造，非第三方）
 ├── tools/                     # 本地开发工具（不进 CI）
@@ -154,8 +154,8 @@ npm test            # 两者都跑
   并发下载同键被拒、进度表容量上限
 - **数据库升级**：老结构库跑迁移后列补齐、旧数据/收藏/歌单/历史一条不少、旧歌仍算本地歌曲、
   唯一索引生效、重复执行幂等
-- **数据目录选址**：安装版放 `%LOCALAPPDATA%`（**绝不放安装目录**）、免安装版放软件目录、
-  开发模式放项目根；两边（Electron / Python）规则必须一致
+- **数据目录选址**：免安装版与安装版都在**软件目录（跟 EXE 同级）**、开发模式放项目根；
+  两边（Electron / Python）规则必须一致
 - **更新检查**：版本比较（含 `1.0.10 > 1.0.9` 这类字典序会判错的用例）、资产筛选、四种 API 结果
 
 ### 真实界面端到端（改过桥接/交互就该跑一次）
@@ -176,26 +176,38 @@ npm run test:ui     # 前置：frontend/dist 已构建；sources/ 下至少有�
 
 > 受限环境（沙箱/容器）里 Chromium 的 GPU 进程起不来，脚本已自带 `--no-sandbox --disable-gpu`。
 
-### 打包后的数据目录（改过 `paths.py` / `dataRoot.js` / 打包配置就该跑一次）
+### 数据放在软件目录 —— 三条必须跑的验证
 
-数据目录选址有两套实现（Electron 主进程 `electron/dataRoot.js` 与后端 `app/utils/paths.py`），
-两边必须算出**同一个**目录，否则会出现「主进程写一处、后端读另一处」这种隐蔽故障。
-单元测试（`tests/paths.test.py` / `tests/data-root.test.js`）只能测纯函数 ——
-把 frozen/exe/LOCALAPPDATA 当参数注入，**真实打包才会走到的部分覆盖不到**。
-所以另有两条验证：
+**数据一律放在软件目录（跟 EXE 同级）**：免安装版与安装版规则相同，整个目录自包含、可整体搬移。
+但安装版有个陷阱：**升级时安装器会先执行旧版的卸载程序**，而它默认会
+`RMDir /r $INSTDIR` 把安装目录整个删掉 —— 数据跟着没（这是真实发生过的用户缺陷）。
+所以「数据放在安装目录里」这条约定**必须**配合 `resources/installer.nsh` 的
+`customRemoveFiles` 宏（升级时保留 data/music/sources/cache/.appdata，真正卸载时才删）。
+
+三处改动都要验证，分别对应三层：
 
 ```bash
-# ① 后端：把打包后的后端放进「模拟安装版 / 模拟免安装版」两棵树各跑一次，看数据库落在哪
+# ① NSIS 宏：升级真的不删数据吗？（唯一能验证「保数据」这一层的手段）
+#    用 electron-builder 自带的 makensis 编译并运行真实宏，断言两种场景的结果
+python tools/verify-nsis-keep-data.py
+
+# ② 后端：把打包后的后端放进「模拟安装版 / 模拟免安装版」两棵树各跑一次，看数据库落在哪
 uv run pyinstaller build.spec --noconfirm --distpath backend-dist --workpath build-temp
 python tools/verify-frozen-paths.py
 
-# ② 主进程：在真实打包布局上校验选址规则（不需要打包）；有产物时还会实跑应用
+# ③ 主进程：在真实打包布局上校验选址规则（不需要打包）；有产物时还会实跑应用
 node tools/verify-packaged-app.js
 TEYVAT_INSTALLED_DIR=<你的安装目录> node tools/verify-packaged-app.js   # 连自定义安装目录一起验
 ```
 
-> **为什么必须验**：安装版若把数据写回安装目录，升级时会被卸载程序 `RMDir /r $INSTDIR` 删光 ——
-> 这正是 v1.0.6 修掉的「每次更新丢光全部数据」。这条规则不能只靠单元测试兜着。
+单元测试（`tests/paths.test.py` / `tests/data-root.test.js`）只能测**纯函数** ——
+把 frozen/exe 当参数注入，真实打包才走到的部分、以及 NSIS 那段宏，都覆盖不到，所以才有上面三条。
+
+> ⚠️ **`resources/installer.nsh` 必须带 UTF-8 BOM**：NSIS 在 `Unicode true` 下对含非 ASCII
+> 注释的脚本要求 BOM，否则 `Bad text encoding` 编译失败（本地不打包发现不了，CI 才会暴露）。
+> `python tools/verify-nsis-keep-data.py` 会顺带把这一点测出来。
+>
+> **卸载行为**：升级保留数据；**真正卸载会连数据一起删**（随包 README 已告知用户先备份）。
 >
 > ⚠️ **本机跑 electron-builder 很慢**（实测 `--dir` 会卡在压缩阶段 20 分钟以上），
 > 需要实跑 ② 时优先用 CI 的产物；日常只跑 ① 与布局校验就够了。

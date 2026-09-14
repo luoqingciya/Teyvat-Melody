@@ -63,15 +63,18 @@ function checkRealLayouts() {
     });
     ok(`${c.name}：安装目录识别正确`, path.resolve(found) === path.resolve(c.dir), found);
     ok(`${c.name}：安装版判定正确`, installed === c.installed, `期望 ${c.installed}，实际 ${installed}`);
-    if (c.installed) {
-      ok(
-        `${c.name}：数据根目录在 %LOCALAPPDATA% 下（**不在安装目录内**）`,
-        root.startsWith(process.env.LOCALAPPDATA || "\u0000") && !root.startsWith(path.resolve(c.dir)),
-        root
-      );
-    } else {
-      ok(`${c.name}：数据根目录 = 便携目录本身（整目录可搬移）`, path.resolve(root) === path.resolve(c.dir), root);
-    }
+    // 数据一律在软件目录（EXE 同级）—— 安装版也一样，靠 NSIS 的 customRemoveFiles 宏
+    // 在升级时保住这些目录（见 resources/installer.nsh）
+    ok(
+      `${c.name}：数据根目录 = 软件目录本身（跟 EXE 同级）`,
+      path.resolve(root) === path.resolve(c.dir),
+      root
+    );
+    ok(
+      `${c.name}：不落在 %LOCALAPPDATA%（v1.0.6 的旧做法已废弃）`,
+      !root.startsWith(process.env.LOCALAPPDATA || "\u0000"),
+      root
+    );
   }
   if (!checked) {
     console.log("SKIP  本机没有可校验的真实打包布局（先打包一次，或用 TEYVAT_INSTALLED_DIR 指定安装目录）");
@@ -79,27 +82,31 @@ function checkRealLayouts() {
   return checked;
 }
 
-/** 启动应用，等某个目录出现（或超时），然后关掉。
+/** 启动应用，等**全部**期望目录出现（或超时），然后关掉。
+ *
+ *  等齐再判定很关键：`.appdata` 出现得早（Electron 首次写 userData 时），
+ *  而 `sources/` 要等 `app.whenReady()` 里的 `sourceManager.init()` 才建 ——
+ *  只等 `.appdata` 就杀进程会误判成「sources 没落对地方」。
+ *
  *  LOCALAPPDATA 与 APPDATA 都指向临时目录 —— 后者是 Electron 默认 userData 的位置，
  *  不改的话应用会把**真实用户目录**里的旧数据搬进临时目录，验证就不干净了。 */
-async function launchAndWait(localAppData, expectDir, timeoutMs = 60000) {
+async function launchAndWait(localAppData, expectPaths, timeoutMs = 90000) {
   const proc = spawn(EXE, [], {
     cwd: APP_DIR,
     env: { ...process.env, LOCALAPPDATA: localAppData, APPDATA: path.join(localAppData, "..", "roaming") },
     stdio: "ignore",
   });
   const deadline = Date.now() + timeoutMs;
-  let seen = false;
+  const missing = () => expectPaths.filter((p) => !fs.existsSync(p));
   while (Date.now() < deadline) {
-    if (fs.existsSync(expectDir)) {
-      // 目录出现后再等一拍，让同级的其它目录也落定（避免只看到一半就断言）
-      await sleep(1500);
-      seen = true;
+    if (!missing().length) {
+      await sleep(800); // 目录出现后再等一拍，让同级目录也落定
       break;
     }
     if (proc.exitCode !== null) break; // 进程提前退出
     await sleep(500);
   }
+  const left = missing();
   try {
     proc.kill();
   } catch {
@@ -117,7 +124,7 @@ async function launchAndWait(localAppData, expectDir, timeoutMs = 60000) {
       resolve();
     }, 8000);
   });
-  return { seen, exitCode: proc.exitCode };
+  return { seen: left.length === 0, missing: left, exitCode: proc.exitCode };
 }
 
 (async () => {
@@ -136,37 +143,37 @@ async function launchAndWait(localAppData, expectDir, timeoutMs = 60000) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-packaged-"));
 
   try {
-    // ---- 情形一：安装版（同级有 Uninstall *.exe）→ 数据必须放到 %LOCALAPPDATA% ----
-    // 先跑这一例：此时应用目录里还没有 .appdata，断言「没在安装目录里建」才是干净的
+    // ---- 情形一：安装版（同级有 Uninstall *.exe）----
+    // 数据同样放在软件目录（EXE 同级）；升级时靠 NSIS 的 customRemoveFiles 宏保住。
     ok("前置：应用目录里此刻没有 .appdata（免安装版遗留）", !fs.existsSync(path.join(APP_DIR, ".appdata")));
     fs.writeFileSync(FAKE_UNINSTALLER, "");
     const instLocal = path.join(tmp, "installed-localappdata");
-    const expectInstalled = path.join(instLocal, "TeyvatMelody", ".appdata");
-    const r1 = await launchAndWait(instLocal, expectInstalled);
-    console.log(`  （安装版启动：见目录=${r1.seen} 退出码=${r1.exitCode}）`);
-    ok("安装版：打包应用能启动并写入 %LOCALAPPDATA%/TeyvatMelody/.appdata", r1.seen, expectInstalled);
+    const r1 = await launchAndWait(instLocal, [
+      path.join(APP_DIR, ".appdata"),
+      path.join(APP_DIR, "data"),
+      path.join(APP_DIR, "sources"),
+    ]);
+    console.log(`  （安装版启动：见齐目录=${r1.seen} 缺=${JSON.stringify(r1.missing)} 退出码=${r1.exitCode}）`);
+    ok("安装版：.appdata / data / sources 都落在软件目录（EXE 同级）", r1.seen, JSON.stringify(r1.missing));
     ok(
-      "安装版：**没有**在安装目录里建 .appdata（这正是防丢数据的关键）",
-      !fs.existsSync(path.join(APP_DIR, ".appdata")),
-      path.join(APP_DIR, ".appdata")
-    );
-    ok(
-      "安装版：数据子目录（data / sources）也落在 LOCALAPPDATA 下",
-      fs.existsSync(path.join(instLocal, "TeyvatMelody", "data")) &&
-        fs.existsSync(path.join(instLocal, "TeyvatMelody", "sources")),
-      JSON.stringify(fs.readdirSync(path.join(instLocal, "TeyvatMelody")))
+      "安装版：不往 %LOCALAPPDATA% 写数据（v1.0.6 的旧做法已废弃）",
+      !fs.existsSync(path.join(instLocal, "TeyvatMelody")),
+      path.join(instLocal, "TeyvatMelody")
     );
 
     // 撤掉假的卸载程序，切回免安装版形态
     fs.rmSync(FAKE_UNINSTALLER, { force: true });
     ok("前置：假卸载程序已移除", !fs.existsSync(FAKE_UNINSTALLER));
 
-    // ---- 情形二：免安装版（没有卸载程序）→ 数据仍放软件目录 ----
+    // ---- 情形二：免安装版（没有卸载程序）→ 数据同样在软件目录 ----
     const portLocal = path.join(tmp, "portable-localappdata");
-    const expectPortable = path.join(APP_DIR, ".appdata");
-    const r2 = await launchAndWait(portLocal, expectPortable);
-    console.log(`  （免安装版启动：见目录=${r2.seen} 退出码=${r2.exitCode}）`);
-    ok("免安装版：数据落在软件目录（整个文件夹仍可搬移）", r2.seen, expectPortable);
+    const r2 = await launchAndWait(portLocal, [
+      path.join(APP_DIR, ".appdata"),
+      path.join(APP_DIR, "data"),
+      path.join(APP_DIR, "sources"),
+    ]);
+    console.log(`  （免安装版启动：见齐目录=${r2.seen} 缺=${JSON.stringify(r2.missing)} 退出码=${r2.exitCode}）`);
+    ok("免安装版：.appdata / data / sources 都落在软件目录（整目录可搬移）", r2.seen, JSON.stringify(r2.missing));
     ok(
       "免安装版：不往 LOCALAPPDATA 写东西",
       !fs.existsSync(path.join(portLocal, "TeyvatMelody")),

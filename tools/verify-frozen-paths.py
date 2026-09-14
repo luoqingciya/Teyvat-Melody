@@ -113,7 +113,10 @@ def main() -> int:
 
     tmp = Path(tempfile.mkdtemp(prefix="tm-frozen-"))
     try:
-        # ---- 情形一：安装版（同级有 Uninstall *.exe）→ 数据必须放到 LOCALAPPDATA ----
+        # ---- 情形一：安装版（同级有 Uninstall *.exe）→ 数据也在软件目录（跟 EXE 同级）----
+        # 注意：安装版**不能**把数据写到 %LOCALAPPDATA%，也不能漏写进安装目录 ——
+        # 数据必须在安装目录里，并由 NSIS 的 customRemoveFiles 宏在升级时保住
+        # （那段 NSIS 由 tools/verify-nsis-keep-data.py 验证）。
         inst_app = make_tree(tmp / "installed", src_dist, installed=True)
         inst_local = tmp / "installed-localappdata"
         r1 = run_backend_and_wait(inst_app, inst_local)
@@ -121,17 +124,17 @@ def main() -> int:
         if r1.get("started"):
             ok("安装版：接口可正常访问", r1.get("songs") == 0, json.dumps(r1))
             ok(
-                "安装版：数据库落在 %LOCALAPPDATA%/TeyvatMelody/data",
-                (inst_local / "TeyvatMelody" / "data" / "library.db").is_file(),
-                str(inst_local / "TeyvatMelody" / "data"),
-            )
-            ok(
-                "安装版：**没有**在安装目录里建 data（这正是防丢数据的关键）",
-                not (inst_app / "data").exists(),
+                "安装版：数据库落在软件目录（EXE 同级）",
+                (inst_app / "data" / "library.db").is_file(),
                 str(inst_app / "data"),
             )
+            ok(
+                "安装版：不往 %LOCALAPPDATA% 写数据（v1.0.6 的旧做法已废弃）",
+                not (inst_local / "TeyvatMelody").exists(),
+                str(inst_local / "TeyvatMelody"),
+            )
 
-        # ---- 情形二：免安装版（没有卸载程序）→ 数据仍放软件目录 ----
+        # ---- 情形二：免安装版（没有卸载程序）→ 数据同样在软件目录 ----
         port_app = make_tree(tmp / "portable", src_dist, installed=False)
         port_local = tmp / "portable-localappdata"
         r2 = run_backend_and_wait(port_app, port_local)
