@@ -1,8 +1,9 @@
 // 用 CDP 截取真实界面的截图：做排版 / 样式改动时用来自查，比盲改可靠。
 //
 // 用法：
-//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--settings] [--tab=lyrics] [--search=关键词] [--page=2]
+//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--filter=仅在线] [--settings] [--tab=lyrics] [--search=关键词] [--page=2]
 //     --route    先切到该哈希路由（点侧栏链接，避免与路由初始化竞争）
+//     --filter   「全部音乐」页点来源筛选 chip（全部 / 仅本地 / 仅在线）
 //     --settings 打开设置弹窗
 //     --tab      设置弹窗里切到该分类：playback / appearance / lyrics / online / about
 //     --search   在在线搜索页真的搜一次并等出结果（要看结果列表/翻页栏时用）
@@ -27,6 +28,8 @@ const targetPage = Number((args.find((a) => a.startsWith("--page=")) || "").repl
 // 设置页分类（按左侧标签顺序的下标定位）：playback / appearance / lyrics / online / about
 const settingsTab = (args.find((a) => a.startsWith("--tab=")) || "").replace("--tab=", "");
 const TAB_ORDER = ["playback", "appearance", "lyrics", "online", "about"];
+// 「全部音乐」的来源筛选：全部 / 仅本地 / 仅在线
+const sourceFilter = (args.find((a) => a.startsWith("--filter=")) || "").replace("--filter=", "");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -94,6 +97,16 @@ async function waitForPage(timeoutMs = 90000) {
         if (link) link.click();
       })()`);
       await sleep(900);
+    }
+
+    // 点「全部音乐」的来源筛选 chip（全部 / 仅本地 / 仅在线）
+    if (sourceFilter) {
+      await evaluate(`(() => {
+        const chips = [...document.querySelectorAll('.src-chip')];
+        const target = chips.find((c) => c.textContent.includes(${JSON.stringify(sourceFilter)}));
+        if (target) target.click();
+      })()`);
+      await sleep(600);
     }
 
     if (openSettings) {

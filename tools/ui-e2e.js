@@ -456,11 +456,18 @@ const ok = (name, cond, extra) => {
 
     const favState = await cdp.eval(`(async () => {
       const lib = await fetch('/api/online/library').then((r) => r.json());
-      const target = (lib.data || [])[0] || null;
-      const favsBefore = await fetch('/api/favorites').then((r) => r.json());
-      const wasFav = !!target && (favsBefore.data || []).some((s) => s.id === target.id);
-
+      // ⚠️ 必须盯着**与点击同一首**歌的状态。
+      // 旧实现是「取 /api/online/library 的第一条」当观察目标，却点「搜索结果第一行的爱心」——
+      // 两者常常不是同一首歌（搜索顺序 ≠ 入库顺序），于是 toggle 生效了而观测的那首没变，
+      // 断言就随机失败。改成先取行首那首的标题，再按标题到库里找对应记录。
       const row = document.querySelector('.online-row');
+      if (!row) return { err: 'no-row' };
+      const title = row.querySelector('.col-title').textContent.replace(/在线音乐/g, '').trim();
+      const libEntry = (lib.data || []).find((s) => title.includes(s.title) || s.title.includes(title));
+
+      const favsBefore = await fetch('/api/favorites').then((r) => r.json());
+      const wasFav = !!libEntry && (favsBefore.data || []).some((s) => s.id === libEntry.id);
+
       const btns = row.querySelectorAll('.op-btn');
       if (btns.length < 5) return { err: 'op-btn=' + btns.length };
       btns[3].click(); // 收藏
@@ -470,27 +477,139 @@ const ok = (name, cond, extra) => {
         fetch('/api/online/library').then((r) => r.json()),
         fetch('/api/favorites').then((r) => r.json()),
       ]);
-      const first = (lib2.data || [])[0] || null;
-      const nowFav = !!first && (favsAfter.data || []).some((s) => s.id === first.id);
+      // 观察目标必须还是「刚才点的那一首」：入库顺序一变，lib2[0] 就不是它了。
+      // 用标题二次定位（若它刚被收藏，库里应已有它；若刚被取消收藏，库里这条记录仍在，
+      // 收藏只是把 id 挂进 favorites，不会删除歌曲），所以按标题必定找得到。
+      const after =
+        (lib2.data || []).find((s) => s.id === (libEntry && libEntry.id)) ||
+        (lib2.data || []).find((s) => title.includes(s.title) || s.title.includes(title)) ||
+        null;
+      const nowFav = !!after && (favsAfter.data || []).some((s) => s.id === after.id);
+      // ⚠️ 一致性不能用「全局收藏总数」来验——旧的写法是
+      //     nowFav ? favCount > 0 : favCount === 0，它默认「收藏列表里只有这首歌」。
+      //   但开发机曲库里本来就有别的收藏（本地歌、上一次跑测留下的在线歌），
+      //   于是「取消收藏这一首」后 nowFav=false 而 favCount 仍为 1 → 误报。
+      //   正确的不变量是：**收藏列表里的每一条，其收藏状态都为真；反之亦然**（双向一致）。
+      const favIds = (favsAfter.data || []).map((s) => s.id);
+      const listIds = (lib2.data || []).map((s) => s.id);
+      const inList = (id) => listIds.includes(id);
+      const listConsistent = favIds.every((id) => inList(id)); // 收藏的必然在曲库
+      const favSetMatches = !!after && favIds.includes(after.id) === nowFav; // 单曲状态与列表一致
       return {
         lib: (lib2.data || []).length,
-        favCount: (favsAfter.data || []).length,
+        favCount: favIds.length,
         wasFav,
         nowFav,
         flipped: wasFav !== nowFav,
-        firstTitle: first ? first.title : null,
-        firstSource: first ? first.online_source : null,
+        firstTitle: after ? after.title : null,
+        firstSource: after ? after.online_source : null,
+        matched: !!after,
+        listConsistent,
+        favSetMatches,
       };
     })()`);
     console.log("  收藏结果:", JSON.stringify(favState));
     ok("收藏在线歌曲 → 已入库到曲库", favState?.lib > 0, JSON.stringify(favState));
+    ok("收藏在线歌曲 → 观测到同一首歌（未被入库顺序错位）", favState?.matched === true, JSON.stringify(favState));
     ok("收藏在线歌曲 → 收藏状态被切换", favState?.flipped === true, JSON.stringify(favState));
     ok(
       "收藏列表与该曲收藏状态一致",
-      favState?.nowFav ? favState.favCount > 0 : favState?.favCount === 0,
+      favState?.favSetMatches === true,
+      JSON.stringify(favState)
+    );
+    ok(
+      "收藏列表里的歌都在曲库中（收藏不会指向不存在的歌）",
+      favState?.listConsistent === true,
       JSON.stringify(favState)
     );
     ok("入库记录带有来源平台（说明不是本地歌曲）", !!favState?.firstSource, JSON.stringify(favState));
+
+    // 5e)「全部音乐」应当同时列出本地曲库与已入库的在线歌曲，并能按来源筛选。
+    //     此前这一页只列本地曲库，用户会问「我收藏的在线歌怎么不在全部里」。
+    const allView = await cdp.eval(`(async () => {
+      const go = (hash) => document.querySelector('a[href="' + hash + '"]').click();
+      go('#/songs');
+      for (let i = 0; i < 60; i++) {
+        if (document.querySelector('.src-chip')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 400));
+
+      const chips = () => [...document.querySelectorAll('.src-chip')];
+      const rows = () => [...document.querySelectorAll('.song-row')];
+      const onlineRows = () => rows().filter((r) => r.querySelector('.tag-online')).length;
+      const sourceCells = () => rows().map((r) => {
+        const b = r.querySelector('.src-badge');
+        return b ? b.textContent.trim() : (r.querySelector('.src-local') ? '本地' : '');
+      });
+
+      const labels = chips().map((c) => c.textContent.replace(/\\s+/g, ' ').trim());
+      const allCount = rows().length;
+      const allOnline = onlineRows();
+      const hasSourceCol = !!document.querySelector('.col-source-h');
+      const sources = sourceCells();
+
+      // 切到「仅在线」
+      const onlyOnline = chips().find((c) => c.textContent.includes('仅在线'));
+      if (onlyOnline) onlyOnline.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const onlineOnly = { rows: rows().length, onlineRows: onlineRows() };
+
+      // 切到「仅本地」
+      const onlyLocal = chips().find((c) => c.textContent.includes('仅本地'));
+      if (onlyLocal) onlyLocal.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const localOnly = { rows: rows().length, onlineRows: onlineRows() };
+
+      // 回到「全部」
+      const all = chips().find((c) => /^全部/.test(c.textContent.trim()));
+      if (all) all.click();
+      await new Promise((r) => setTimeout(r, 300));
+
+      return { labels, allCount, allOnline, hasSourceCol, sources, onlineOnly, localOnly };
+    })()`);
+    console.log("  全部音乐:", JSON.stringify(allView));
+    ok("「全部音乐」有来源筛选条（全部 / 仅本地 / 仅在线）", (allView?.labels || []).length === 3, JSON.stringify(allView?.labels));
+    ok("「全部音乐」有来源列", allView?.hasSourceCol === true);
+    ok(
+      "「全部音乐」列出了在线歌曲（本地+在线混排）",
+      allView?.allOnline > 0,
+      `在线行数=${allView?.allOnline} / 总行数=${allView?.allCount}`
+    );
+    ok(
+      "本地歌曲的来源列标为「本地」",
+      (allView?.sources || []).includes("本地"),
+      JSON.stringify(allView?.sources)
+    );
+    ok(
+      "在线歌曲的来源列标出平台名（不是「本地」）",
+      (allView?.sources || []).some((s) => s && s !== "本地"),
+      JSON.stringify(allView?.sources)
+    );
+    ok(
+      "「仅在线」只留在线歌曲",
+      allView?.onlineOnly?.rows > 0 && allView.onlineOnly.rows === allView.onlineOnly.onlineRows,
+      JSON.stringify(allView?.onlineOnly)
+    );
+    ok(
+      "「仅本地」不含任何在线歌曲",
+      allView?.localOnly?.onlineRows === 0 && allView.localOnly.rows > 0,
+      JSON.stringify(allView?.localOnly)
+    );
+    ok(
+      "「仅本地」+「仅在线」= 全部",
+      allView?.localOnly?.rows + allView?.onlineOnly?.rows === allView?.allCount,
+      `${allView?.localOnly?.rows} + ${allView?.onlineOnly?.rows} vs ${allView?.allCount}`
+    );
+
+    // 回到在线搜索页，后续断言（加入歌单 / 换音质 / 下载）都在那一页
+    await cdp.eval(`(async () => {
+      document.querySelector('a[href="#/online"]').click();
+      for (let i = 0; i < 60; i++) {
+        if (document.querySelector('.online-row')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    })()`);
 
     // 加入歌单：右键菜单 → 选择器 → 新建歌单并加入。
     // 歌单名带时间戳：既保证每轮都走「新建」分支，也避免历史遗留歌单干扰断言。

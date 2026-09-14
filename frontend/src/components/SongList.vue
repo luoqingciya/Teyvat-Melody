@@ -12,6 +12,22 @@
           <AppIcon name="x" :size="13" />
         </button>
       </div>
+
+      <!-- 来源筛选：只在「全部音乐」出现。
+           本地曲库与已入库的在线歌曲混在一起时，用户需要一个办法
+           「只看本地」或「只看在线」——在线歌曲要联网才播得出，行为不同应当可分。 -->
+      <div v-if="showSourceFilter" class="song-filters">
+        <button
+          v-for="f in SOURCE_FILTERS"
+          :key="f.key"
+          class="src-chip"
+          :class="{ 'src-chip--on': sourceFilter === f.key }"
+          @click="sourceFilter = f.key"
+        >
+          {{ t(f.label) }}
+          <span v-if="sourceCounts[f.key] != null" class="src-chip__n">{{ sourceCounts[f.key] }}</span>
+        </button>
+      </div>
     </div>
 
     <div class="song-table__head row-grid">
@@ -20,6 +36,7 @@
       <span>{{ t("song.colSong") }}</span>
       <span>{{ t("song.colArtist") }}</span>
       <span>{{ t("song.colAlbum") }}</span>
+      <span v-if="showSourceFilter" class="col-source-h">{{ t("song.colSource") }}</span>
       <span class="col-quality">{{ t("song.colQuality") }}</span>
       <span class="col-duration">{{ t("song.colDuration") }}</span>
     </div>
@@ -54,6 +71,12 @@
           </span>
           <span :title="song.artist || t('song.unknownArtist')">{{ song.artist || t("song.unknownArtist") }}</span>
           <span :title="song.album || '—'">{{ song.album || "—" }}</span>
+          <span v-if="showSourceFilter" class="col-source">
+            <span v-if="song.online" class="src-badge" :title="sourceLabel(song.source)">{{
+              sourceLabel(song.source)
+            }}</span>
+            <span v-else class="src-local">{{ t("song.sourceLocal") }}</span>
+          </span>
           <span class="col-quality" :title="qualityLabel(song)">{{ qualityLabel(song) }}</span>
           <span class="col-duration">{{ formatDuration(song.duration) }}</span>
         </div>
@@ -145,12 +168,49 @@ const recentSongs = computed(() => {
   return config.recentSongs.map((id) => map.get(id)).filter(Boolean);
 });
 
+// 「全部音乐」= 本地曲库 + 已入库的在线歌曲。
+//
+// 为什么在这里合：在线歌曲入库后，收藏 / 歌单 / 最近播放里都能出现它们，
+// 但「全部音乐」此前只列本地曲库 —— 用户会觉得「我下的歌、我收藏的怎么不在全部里」。
+// 两者混排后必须能区分（在线歌要联网才播得出），所以加了来源列与来源筛选。
+//
+// ⚠️ 顺序：本地在前、在线在后。不是为了好看 —— 本地歌曲是「一定播得出来」的那批，
+// 让它们先占住列表前部，用户点第一首的失败概率最低。
+const allSongs = computed(() => [...library.songList, ...library.onlineSongs]);
+
+// 来源筛选只在「全部音乐」（路由 name = songs）出现；
+// 收藏/歌单/最近播放本来就有明确语义，不需要再按来源筛。
+const showSourceFilter = computed(() => route.name === "songs");
+
+const SOURCE_FILTERS = [
+  { key: "all", label: "song.filterAll" },
+  { key: "local", label: "song.filterLocal" },
+  { key: "online", label: "song.filterOnline" },
+];
+const sourceFilter = ref("all");
+
+// 各筛选下的条数（显示在 chip 上，避免用户点进去才发现是空的）
+const sourceCounts = computed(() => ({
+  all: allSongs.value.length,
+  local: library.songList.length,
+  online: library.onlineSongs.length,
+}));
+
+/** 在线歌曲的平台名（来源列显示） */
+function sourceLabel(key) {
+  const map = { kw: "酷我", kg: "酷狗", tx: "QQ音乐", wy: "网易云" };
+  return map[key] || key || "在线";
+}
+
 // 按路由选取数据源
 const baseSongs = computed(() => {
   if (route.name === "favorites") return library.favorites;
   if (route.name === "recent") return recentSongs.value;
   if (route.name === "playlist") return playlist.currentSongs;
-  return library.songList;
+  // 「全部音乐」：本地 + 在线，再按来源筛选
+  if (sourceFilter.value === "local") return library.songList;
+  if (sourceFilter.value === "online") return library.onlineSongs;
+  return allSongs.value;
 });
 
 // 搜索过滤
@@ -398,6 +458,12 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   padding: 0 var(--space-4);
 }
+/* 「全部音乐」多一列来源（本地/平台名）。用 :has 判定表头里有没有来源列 ——
+   比给每一行都加一个类名更省事，且不可能出现「表头有列、行没列」的错位。 */
+.song-table__head:has(.col-source-h),
+.song-scroll:has(.col-source) .song-row {
+  grid-template-columns: 34px 36px 1.4fr 1fr 1fr 76px minmax(96px, auto) 56px;
+}
 .row-grid > * {
   min-width: 0;
   overflow: hidden;
@@ -478,6 +544,58 @@ onBeforeUnmount(() => {
   color: var(--teyvat-text-secondary);
   font-size: 12px;
   white-space: nowrap;
+}
+/* ---- 来源筛选（仅「全部音乐」） ---- */
+.song-filters {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: auto; /* 贴右，与搜索框分列两端 */
+}
+.src-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--teyvat-card-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--teyvat-text-secondary);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.src-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--teyvat-text-primary);
+}
+.src-chip--on {
+  background: color-mix(in srgb, var(--teyvat-gold) 18%, transparent);
+  border-color: color-mix(in srgb, var(--teyvat-gold) 45%, transparent);
+  color: var(--teyvat-gold);
+}
+/* chip 上的条数：让用户点之前就知道会不会是空的 */
+.src-chip__n {
+  font-size: 11px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+/* ---- 来源列 ---- */
+.col-source {
+  overflow: visible;
+}
+.src-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--teyvat-blue) 22%, transparent);
+  color: var(--teyvat-text-primary);
+  border: 1px solid color-mix(in srgb, var(--teyvat-blue) 40%, transparent);
+}
+.src-local {
+  font-size: 11px;
+  color: var(--teyvat-text-secondary);
+  opacity: 0.7;
 }
 .fav-btn {
   border: none;
