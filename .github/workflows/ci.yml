@@ -49,6 +49,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -56,6 +58,17 @@ jobs:
 
       - name: Install Python dependencies
         run: uv sync --frozen
+
+      # ⚠️ 必须装 frontend 依赖，哪怕这一步跑的是「后端 / 主进程」测试：
+      #    tests/online-search-store.test.js 会 import frontend/src/stores/onlineSearch.js，
+      #    而该 store 顶层 `import { reactive, ref, computed } from "vue"`。
+      #    bare specifier 是从**导入方所在目录**向上查找 node_modules 的，所以只有
+      #    装好 frontend/node_modules 才解析得到 vue。漏装会让这个文件在 import 阶段
+      #    就以 ERR_MODULE_NOT_FOUND 崩掉 —— 没有 FAIL 行、只体现为「9/10 个测试文件通过」，
+      #    本机因为 frontend/node_modules 已存在而完全看不出来（只在 CI 复现）。
+      - name: Install frontend dependencies (needed by the store test)
+        run: npm ci
+        working-directory: frontend
 
       - name: Node tests (source host / playback / search / lyrics)
         run: node tests/run.js

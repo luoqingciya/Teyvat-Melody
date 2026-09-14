@@ -16,10 +16,26 @@ if (!files.length) {
 }
 
 let failed = 0;
+const crashed = [];
 for (const f of files) {
   console.log(`\n===== ${f} =====`);
   const r = spawnSync(process.execPath, [path.join(dir, f)], { stdio: "inherit" });
-  if (r.status !== 0) failed++;
+  if (r.status !== 0) {
+    failed++;
+    // 区分「断言失败」和「文件根本没跑起来」：后者没有 FAIL 行，只体现为计数少 1，
+    // 在 CI 日志里极难定位（曾因缺 frontend 依赖、import 阶段 ERR_MODULE_NOT_FOUND
+    // 而表现为「9/10 个测试文件通过」却找不到任何 FAIL）。这里单独点出来。
+    if (r.status === null || r.signal) {
+      crashed.push(`${f}（被信号 ${r.signal || "?"} 终止）`);
+    } else {
+      crashed.push(`${f}（退出码 ${r.status}）`);
+    }
+  }
+}
+
+if (crashed.length) {
+  console.log("\n⚠️ 以下测试文件未正常结束（非断言失败，多为 import/启动阶段报错）：");
+  for (const c of crashed) console.log(`   · ${c}`);
 }
 
 console.log(`\n${files.length - failed}/${files.length} 个测试文件通过`);
