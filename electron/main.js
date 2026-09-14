@@ -55,37 +55,14 @@ function dataRoot() {
  * 那一版为了躲开卸载程序把安装版数据放在那里，本版又改回软件目录，
  * 所以升级上来时要搬回来，否则老用户会「看起来数据全没了」。
  *
- * 用复制而非移动：万一搬移过程中出问题，原数据还在（代价是占双份空间，用户可自行删除）。
+ * 实现在 dataRoot.js（纯函数、有单测）；这里只做日志与调用。
  */
 function migrateLegacyData(newRoot, legacyRoots) {
-  if (fs.existsSync(path.join(newRoot, "data"))) return []; // 已有数据 → 不动，避免覆盖
-  for (const legacyRoot of legacyRoots) {
-    if (!legacyRoot || path.resolve(newRoot) === path.resolve(legacyRoot)) continue;
-    if (!fs.existsSync(path.join(legacyRoot, "data"))) continue;
-    const moved = [];
-    for (const name of dataRootUtil.DATA_DIRS) {
-      const from = path.join(legacyRoot, name);
-      if (!fs.existsSync(from)) continue;
-      const to = path.join(newRoot, name);
-      try {
-        fs.mkdirSync(newRoot, { recursive: true });
-        try {
-          fs.renameSync(from, to); // 同盘：瞬间完成
-        } catch {
-          // 跨盘符 rename 会失败（装在 D:、数据在 C: 时很常见）→ 退回复制
-          fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: false });
-        }
-        moved.push(name);
-      } catch (e) {
-        console.warn(`[migrate] 迁移 ${name} 失败：${e.message}`);
-      }
-    }
-    if (moved.length) {
-      console.log(`[migrate] 已把 ${legacyRoot} 里的数据搬到 ${newRoot}：${moved.join(", ")}`);
-      return moved;
-    }
+  const moved = dataRootUtil.migrateLegacyData(newRoot, legacyRoots);
+  if (moved.length) {
+    console.log(`[migrate] 已把老位置的数据搬到 ${newRoot}：${moved.join(", ")}`);
   }
-  return [];
+  return moved;
 }
 
 // 把所有 Electron 端数据（桌面歌词设置、前端 localStorage 的配置/音量/播放进度/队列/歌词锁定等）

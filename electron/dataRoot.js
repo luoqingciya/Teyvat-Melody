@@ -76,6 +76,59 @@ function legacyLocalAppDataRoot(localAppData) {
   return localAppData ? path.join(localAppData, APP_DIR_NAME) : null;
 }
 
+/**
+ * 把老位置里的数据搬到当前数据根目录（只在根目录还没有数据时执行）。
+ *
+ * ⚠️ 这是**用户升级后不丢数据的最后一道保险** —— 一旦写错，老用户看到的就是
+ * 「曲库、歌单、收藏全空了」。所以这条逻辑放在这里（纯函数、可单测），
+ * 而不是埋在 main.js 里（main.js 依赖 Electron，测不了）。
+ *
+ * 关键取舍：
+ *   · **只在目标没有数据时才搬**（根目录已有 `data/` 就完全不动），
+ *     否则重装/二次启动会把用户的新数据覆盖回旧快照。
+ *   · **先试 `renameSync`（同盘瞬间完成、不占双份空间）**：这是主路径，
+ *     语义上等于「移动」，搬完老位置就没了 —— 同盘 rename 不会中途失败，
+ *     所以不存在「搬一半」的风险，这一步是安全的。
+ *   · rename 失败（跨盘符：装在 D:、老数据在 C: 是常见情况）则退回
+ *     `cpSync` **复制**（`force:false` 是合并语义，不覆盖目标已有文件）：
+ *     这条路径下老数据会保留一份，占双份空间，用户确认无误后可自行删掉旧目录。
+ *   · 总效果：**同盘=移动、跨盘=复制**。老数据会不会留一份，取决于两个盘是不是同一个。
+ *   · 单个目录失败不影响其它目录（各自 try/catch），能救几个是几个 ——
+ *     真正的失败场景是目标写不进去（盘满、权限、文件占用），不是「目标已有同名目录」
+ *     （那个走 cpSync 合并，会成功）。
+ *
+ * @param {string} newRoot 目标数据根目录
+ * @param {Array<string|null|undefined>} legacyRoots 候选旧位置，按优先级排列
+ * @returns {string[]} 实际搬过来的目录名（空数组表示没搬任何东西）
+ */
+function migrateLegacyData(newRoot, legacyRoots) {
+  if (fs.existsSync(path.join(newRoot, "data"))) return []; // 已有数据 → 不动，避免覆盖
+  for (const legacyRoot of legacyRoots) {
+    if (!legacyRoot || path.resolve(newRoot) === path.resolve(legacyRoot)) continue;
+    if (!fs.existsSync(path.join(legacyRoot, "data"))) continue;
+    const moved = [];
+    for (const name of DATA_DIRS) {
+      const from = path.join(legacyRoot, name);
+      if (!fs.existsSync(from)) continue;
+      const to = path.join(newRoot, name);
+      try {
+        fs.mkdirSync(newRoot, { recursive: true });
+        try {
+          fs.renameSync(from, to); // 同盘：瞬间完成
+        } catch {
+          // 跨盘符 rename 会失败（装在 D:、数据在 C: 时很常见）→ 退回复制
+          fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: false });
+        }
+        moved.push(name);
+      } catch (e) {
+        console.warn(`[migrate] 迁移 ${name} 失败：${e.message}`);
+      }
+    }
+    if (moved.length) return moved;
+  }
+  return [];
+}
+
 module.exports = {
   APP_DIR_NAME,
   DATA_DIRS,
@@ -84,4 +137,5 @@ module.exports = {
   isInstalledBuild,
   resolveDataRoot,
   legacyLocalAppDataRoot,
+  migrateLegacyData,
 };
