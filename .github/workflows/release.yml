@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           node tests/run.js
-          uv run python tests/online-proxy.test.py
+          uv run python tests/run.py
 
       - name: Build frontend
         run: npm run build:frontend

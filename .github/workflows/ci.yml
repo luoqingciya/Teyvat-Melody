@@ -60,5 +60,5 @@ jobs:
       - name: Node tests (source host / playback / search / lyrics)
         run: node tests/run.js
 
-      - name: Python tests (audio & cover proxy)
-        run: uv run python tests/online-proxy.test.py
+      - name: Python tests (audio & cover proxy, DB migration)
+        run: uv run python tests/run.py

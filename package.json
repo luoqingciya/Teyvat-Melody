@@ -12,7 +12,7 @@
     "build": "electron-builder --publish never",
     "lint": "cd frontend && npm run lint",
     "test:js": "node tests/run.js",
-    "test:py": "uv run python tests/online-proxy.test.py",
+    "test:py": "uv run python tests/run.py",
     "test": "npm run test:js && npm run test:py",
     "test:ui": "node tools/ui-e2e.js"
   },
