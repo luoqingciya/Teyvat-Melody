@@ -196,6 +196,89 @@ const ok = (name, cond, extra) => {
     ok("搜索未报错", !state?.toastErr, state?.toastErr || state?.toast);
     if (!state?.rows) throw new Error("无结果，跳过播放验证");
 
+    // 5b) 翻页：列表末尾应有「下一页」按钮，点它要**追加**更多结果。
+    //     没有翻页时用户只能看到每页固定那几十条，会以为「只能搜到这些」。
+    const pageBefore = await cdp.eval(`(() => {
+      const pager = document.querySelector('.online-view__pager');
+      const next = pager ? [...pager.querySelectorAll('button')].pop() : null;
+      return {
+        hasPager: !!pager,
+        nextDisabled: next ? next.disabled : null,
+        info: pager ? (pager.querySelector('.pager-info') || {}).textContent : null,
+        rows: document.querySelectorAll('.online-row').length,
+      };
+    })()`);
+    console.log("  翻页栏:", JSON.stringify(pageBefore));
+    ok("结果列表有翻页栏", !!pageBefore.hasPager, "未找到 .online-view__pager");
+    ok("翻页栏显示当前页码", /第\s*\d+\s*页|Page\s*\d+/.test(pageBefore.info || ""), pageBefore.info);
+
+    if (pageBefore.hasPager && !pageBefore.nextDisabled) {
+      const nextClicked = await cdp.eval(`(() => {
+        const pager = document.querySelector('.online-view__pager');
+        const next = [...pager.querySelectorAll('button')].pop();
+        if (!next || next.disabled) return 'disabled';
+        next.click();
+        return 'clicked';
+      })()`);
+      ok("点击「下一页」", nextClicked === "clicked", nextClicked);
+
+      let page2 = null;
+      for (let i = 0; i < 40; i++) {
+        page2 = await cdp.eval(`(() => {
+          const pager = document.querySelector('.online-view__pager');
+          return {
+            rows: document.querySelectorAll('.online-row').length,
+            info: pager ? (pager.querySelector('.pager-info') || {}).textContent : null,
+          };
+        })()`);
+        // 等到条数增加（追加成功）或页码变成 2
+        if (page2.rows > pageBefore.rows) break;
+        await sleep(500);
+      }
+      console.log("  翻页后:", JSON.stringify(page2));
+      ok("翻页后结果被追加（条数增加）", page2.rows > pageBefore.rows, `${pageBefore.rows} → ${page2?.rows}`);
+      ok("页码已前进到第 2 页", /第\s*2\s*页|Page\s*2/.test(page2.info || ""), page2?.info);
+    } else {
+      console.log("  （下一页按钮不可用，跳过翻页断言 —— 可能只有一页结果）");
+    }
+
+    // 5c) 搜索现场持久化：切到「全部音乐」再切回「在线搜索」，结果与关键词都该还在。
+    //     此前这些状态放在组件里，路由一卸载就全丢，用户点走进来还得重搜。
+    const persisted = await cdp.eval(`(async () => {
+      const rowsOf = () => document.querySelectorAll('.online-row').length;
+      const kwOf = () => {
+        const el = document.querySelector('.online-view__input');
+        return el ? el.value : '';
+      };
+      const before = { rows: rowsOf(), kw: kwOf() };
+
+      const other = document.querySelector('a[href="#/songs"]');
+      if (!other) return { error: 'no-songs-link' };
+      other.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const gone = !document.querySelector('.online-view');
+
+      const back = document.querySelector('a[href="#/online"]');
+      if (!back) return { error: 'no-online-link' };
+      back.click();
+      // 等视图重新渲染出来
+      for (let i = 0; i < 60; i++) {
+        if (document.querySelector('.online-row')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { before, gone, after: { rows: rowsOf(), kw: kwOf() } };
+    })()`);
+    console.log("  切页往返:", JSON.stringify(persisted));
+    if (persisted?.error) {
+      ok("搜索现场持久化（切页面往返）", false, persisted.error);
+    } else {
+      ok("切走后原视图确实已卸载（前提成立）", persisted.gone === true, String(persisted.gone));
+      ok("切回后搜索结果仍在", persisted.after.rows === persisted.before.rows && persisted.after.rows > 0,
+        `${persisted.before.rows} → ${persisted.after?.rows}`);
+      ok("切回后搜索关键词仍在", persisted.after.kw === persisted.before.kw && !!persisted.after.kw,
+        `${JSON.stringify(persisted.before.kw)} → ${JSON.stringify(persisted.after?.kw)}`);
+    }
+
     // 6) 点第一条播放：验证在线播放链路（online:getUrl + 同源代理取流）
     //    判定要严：不能只看「行变高亮」——那只能说明 playQueue 被调用了，
     //    真正的失败（源解析不出地址）会晚几秒才以 toast 出现，且时长始终为 00:00。
@@ -515,16 +598,58 @@ const ok = (name, cond, extra) => {
     ok("设置弹窗已打开", settingsReady, "未找到 .settings");
 
     if (settingsReady) {
+      // 分类标签：设置项按类分栏后，先确认标签栏存在，并给出「点标签切分类」的真实交互。
+      // 不点标签的话，非默认分类的内容是 v-show 隐藏的，下面的断言会全部读不到。
+      const tabs = await cdp.eval(`(() => {
+        const nav = document.querySelector('.settings__tabs');
+        if (!nav) return null;
+        return {
+          count: nav.querySelectorAll('.settings__tab').length,
+          labels: [...nav.querySelectorAll('.settings__tab')].map((b) => b.textContent.trim()),
+        };
+      })()`);
+      console.log("  设置分类标签:", JSON.stringify(tabs));
+      ok("设置页有分类标签栏", !!tabs && tabs.count >= 4, JSON.stringify(tabs));
+
+      /** 点某个分类标签，返回是否点中 */
+      const clickTab = async (re) => {
+        const r = await cdp.eval(`(() => {
+          const btn = [...document.querySelectorAll('.settings__tab')]
+            .find((b) => ${re}.test(b.textContent));
+          if (!btn) return 'no-tab';
+          btn.click();
+          return 'clicked';
+        })()`);
+        await sleep(200);
+        return r;
+      };
+
+      // 切到「播放」分类（默认就在这，显式点一次保证状态确定）
+      await clickTab(/^(播放|Playback)$/);
+      const playbackVisible = await cdp.eval(`(() => {
+        const pane = document.querySelector('.settings__pane');
+        const groups = [...document.querySelectorAll('.settings__group')]
+          .filter((g) => g.offsetParent !== null);
+        return groups.length > 0;
+      })()`);
+      ok("「播放」分类下有可见设置项", playbackVisible === true, String(playbackVisible));
+
+      // 切到「关于与更新」分类（版本号 / 数据目录 / 检查更新都在这里）
+      const aboutClicked = await clickTab(/关于|About/);
+      ok("已切到「关于与更新」分类", aboutClicked === "clicked", aboutClicked);
+
       const version = await cdp.eval(`(() => {
-        const row = [...document.querySelectorAll('.settings__row')].find((r) => /当前版本|Current version/.test(r.textContent));
+        const row = [...document.querySelectorAll('.settings__row')]
+          .find((r) => r.offsetParent !== null && /当前版本|Current version/.test(r.textContent));
         return row ? row.textContent.replace(/\\s+/g, ' ').trim() : null;
       })()`);
       ok("设置页显示当前版本", !!version && /\d+\.\d+\.\d+/.test(version), version);
 
       // 数据目录：用户得能自己确认「我的曲库/歌单到底存在哪」——
-      // 安装版的数据放在 %LOCALAPPDATA%（不放安装目录，否则升级会被卸载程序删光）
+      // 两种分发方式数据都跟 EXE 同级（安装目录自包含），整目录可搬移（见 dataRoot.js）
       const dataDir = await cdp.eval(`(() => {
-        const row = [...document.querySelectorAll('.settings__row')].find((r) => /数据目录|Data folder/.test(r.textContent));
+        const row = [...document.querySelectorAll('.settings__row')]
+          .find((r) => r.offsetParent !== null && /数据目录|Data folder/.test(r.textContent));
         if (!row) return null;
         const v = row.querySelector('.settings__value');
         return v ? { text: v.textContent.trim(), title: v.getAttribute('title') || '' } : null;
@@ -538,15 +663,23 @@ const ok = (name, cond, extra) => {
         JSON.stringify(dataDir)
       );
 
-      // 在线播放缓存分组（本次新增）
+      // 在线播放分类：自定义源 + 缓存占用都在这里
+      const onlineClicked = await clickTab(/在线播放|Online/);
+      ok("已切到「在线播放」分类", onlineClicked === "clicked", onlineClicked);
+
       const cacheGroup = await cdp.eval(`(() => {
-        const g = [...document.querySelectorAll('.settings__group')].find((x) => /在线播放缓存|Online playback cache/.test(x.textContent));
+        const g = [...document.querySelectorAll('.settings__group')]
+          .find((x) => x.offsetParent !== null && /在线播放缓存|Online playback cache/.test(x.textContent));
         return g ? g.textContent.replace(/\\s+/g, ' ').trim().slice(0, 90) : null;
       })()`);
       ok("设置页有「在线播放缓存」分组", !!cacheGroup, cacheGroup || "未找到");
 
+      // 回到「关于与更新」再点检查更新（按钮在那个分类下）
+      await clickTab(/关于|About/);
+
       const clickedCheck = await cdp.eval(`(() => {
-        const btn = [...document.querySelectorAll('.settings__action')].find((b) => /检查更新|Check for updates/.test(b.textContent));
+        const btn = [...document.querySelectorAll('.settings__action')]
+          .find((b) => b.offsetParent !== null && /检查更新|Check for updates/.test(b.textContent));
         if (!btn) return 'no-button';
         if (btn.disabled) return 'disabled';
         btn.click();

@@ -3,19 +3,19 @@
     <div class="online-view__toolbar">
       <div class="online-view__search">
         <input
-          v-model="keyword"
+          v-model="ui.keyword"
           class="online-view__input ui-input"
           type="text"
           :placeholder="t('online.placeholder')"
           @keyup.enter="doSearch"
         />
-        <button v-if="keyword" class="online-view__clear" :title="t('song.clearSearch')" @click="keyword = ''">
+        <button v-if="ui.keyword" class="online-view__clear" :title="t('song.clearSearch')" @click="clearKeyword">
           <AppIcon name="x" :size="13" />
         </button>
       </div>
       <button
         class="ui-btn online-view__go"
-        :disabled="loading || !keyword.trim() || !available.length"
+        :disabled="loading || !ui.keyword.trim() || !available.length"
         @click="doSearch"
       >
         {{ loading ? t("online.searching") : t("online.search") }}
@@ -28,7 +28,7 @@
           :key="p.key"
           class="plat-chip"
           :class="{
-            'plat-chip--on': picked.includes(p.key),
+            'plat-chip--on': ui.picked.includes(p.key),
             'plat-chip--off': !available.includes(p.key),
             'plat-chip--warn': !!warnings[p.key],
           }"
@@ -42,6 +42,17 @@
       </div>
     </div>
 
+    <!-- 结果条：告诉用户当前在第几页、共加载了多少条、还能不能继续翻 -->
+    <div v-if="ui.results.length" class="online-view__meta">
+      <span>{{ t("online.resultCount", { n: ui.results.length }) }}</span>
+      <span class="online-view__meta-dot">·</span>
+      <span>{{ t("online.pageInfo", { p: ui.page }) }}</span>
+      <span v-if="atLimit" class="online-view__meta-limit" :title="t('online.limitTip', { n: MAX_RESULTS })">
+        {{ t("online.limitReached") }}
+      </span>
+      <button class="online-view__meta-clear" @click="clearAll">{{ t("online.clearResult") }}</button>
+    </div>
+
     <div class="online-view__head row-grid">
       <span>#</span>
       <span>{{ t("online.colSong") }}</span>
@@ -52,9 +63,9 @@
       <span></span>
     </div>
 
-    <div class="online-view__scroll">
+    <div ref="scroller" class="online-view__scroll" @scroll="onScroll">
       <div
-        v-for="(song, i) in results"
+        v-for="(song, i) in ui.results"
         :key="song.id"
         class="online-row row-grid"
         :class="{ 'online-row--active': player.currentSong?.id === song.id }"
@@ -120,9 +131,20 @@
           </button>
         </span>
       </div>
+
+      <!-- 翻页栏：贴在列表末尾，滚到底自然看到 -->
+      <div v-if="ui.results.length" class="online-view__pager">
+        <button class="ui-btn ui-btn--ghost pager-btn" :disabled="ui.page <= 1 || loading" @click="prevPage">
+          ← {{ t("online.prevPage") }}
+        </button>
+        <span class="pager-info">{{ t("online.pageInfo", { p: ui.page }) }}</span>
+        <button class="ui-btn pager-btn" :disabled="!canNext" @click="nextPage">
+          {{ loadingMore ? t("online.loadingMore") : t("online.nextPage") }} →
+        </button>
+      </div>
     </div>
 
-    <div v-if="!results.length" class="online-view__empty">{{ emptyText }}</div>
+    <div v-if="!ui.results.length" class="online-view__empty">{{ emptyText }}</div>
 
     <SongContextMenu
       :visible="ctx.visible"
@@ -155,13 +177,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from "vue";
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from "vue";
 import GlassCard from "./GlassCard.vue";
 import SongContextMenu from "./SongContextMenu.vue";
 import PlaylistPickerModal from "./PlaylistPickerModal.vue";
 import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
+import { useOnlineSearch, PAGE_SIZE, MAX_RESULTS } from "@/stores/onlineSearch";
 import { useI18n } from "@/utils/i18n";
 import { toast, toastError } from "@/utils/toast";
 import { toPlain } from "@/utils/bridge";
@@ -175,25 +198,30 @@ const PLATFORMS = [
 
 const player = usePlayerStore();
 const online = useOnlineLibrary();
+const search = useOnlineSearch();
 const { t } = useI18n();
 
-const keyword = ref("");
-const loading = ref(false);
-const results = ref([]);
-const searched = ref(false);
-const errorMsg = ref("");
+// 搜索现场（结果 / 关键词 / 页码 / 已选平台）都放在 store 里：
+// 路由切走时本组件会被卸载，放组件内的话回来就全丢了。
+// 这里用 `ui` 指代 store 的 state，模板里少写一层前缀。
+const ui = search.state;
+const loading = search.loading;
+const loadingMore = search.loadingMore;
+const { canNext, atLimit } = search;
+
 const available = ref([]); // 有启用源支持的平台
 const qualitys = ref({}); // 各平台源声明支持的音质
 // 各平台最近的解析失败记录（源声明支持、实际却解析不出地址）：提前提示，避免「搜得到却播不了」
 const warnings = ref({});
-const picked = ref([]); // 当前勾选的平台
-let searchToken = 0; // 并发令牌：连续搜索时丢弃旧结果
+
+const scroller = ref(null);
+let scrollSaveTimer = 0;
 
 const emptyText = computed(() => {
   if (loading.value) return t("online.searching");
   if (!available.value.length) return t("online.noSource");
-  if (errorMsg.value) return errorMsg.value;
-  if (!searched.value) return t("online.hint");
+  if (ui.errorMsg) return ui.errorMsg;
+  if (!ui.searched) return t("online.hint");
   return t("online.noResult");
 });
 
@@ -223,8 +251,9 @@ async function loadPlatforms() {
     qualitys.value = {};
     warnings.value = {};
   }
-  // 默认勾选全部可用平台
-  picked.value = [...available.value];
+  // 默认勾选全部可用平台；若上次已勾过，保留用户的勾选（那是偏好，不该每次进来被重置）
+  const prev = ui.picked.filter((k) => available.value.includes(k));
+  search.markPlatformsLoaded(prev.length ? prev : available.value);
 }
 
 /** 只刷新失败提示，不动用户已勾选的平台（播放失败后调用） */
@@ -241,50 +270,159 @@ async function refreshWarnings() {
 
 function togglePlat(key) {
   if (!available.value.includes(key)) return;
-  const i = picked.value.indexOf(key);
-  if (i >= 0) picked.value.splice(i, 1);
-  else picked.value.push(key);
+  const i = ui.picked.indexOf(key);
+  if (i >= 0) ui.picked.splice(i, 1);
+  else ui.picked.push(key);
+  search.persist();
 }
 
-async function doSearch() {
-  const kw = keyword.value.trim();
-  if (!kw || loading.value) return;
+/** 清空搜索框（保留结果，用户可能只是想改词再搜） */
+function clearKeyword() {
+  ui.keyword = "";
+  search.persist();
+}
+
+/** 清空整个搜索现场（结果 + 关键词 + 页码） */
+function clearAll() {
+  search.reset();
+}
+
+/**
+ * 发起搜索。
+ * @param {number} page 目标页；1 = 新搜索（清空旧结果），>1 = 追加翻页
+ */
+async function runSearch(page) {
+  const kw = ui.keyword.trim();
+  if (!kw || loading.value || loadingMore.value) return;
   if (!available.value.length) {
     toastError(t("online.noSource"));
     return;
   }
-  const token = ++searchToken;
-  loading.value = true;
-  errorMsg.value = "";
+  const token = search.nextToken();
+  const isFirst = page <= 1;
+  if (isFirst) {
+    loading.value = true;
+    ui.errorMsg = "";
+  } else {
+    loadingMore.value = true;
+  }
   try {
     const api = window.pywebview?.api;
     if (!api || typeof api.searchOnline !== "function") throw new Error("当前环境不支持在线搜索");
     // picked 是 reactive 数组：跨 contextBridge 前必须转成普通值，否则结构化克隆会拒绝
-    const r = await api.searchOnline(kw, toPlain(picked.value));
-    if (token !== searchToken) return; // 已被后续搜索取代
-    searched.value = true;
+    const r = await api.searchOnline(kw, toPlain(ui.picked), page);
+    if (search.isStale(token)) return; // 已被后续搜索取代
+    ui.searched = true;
     if (!r || !r.ok) {
-      results.value = [];
-      errorMsg.value = r?.message || t("online.failed", { m: "unknown" });
+      if (isFirst) ui.results = [];
+      ui.errorMsg = r?.message || t("online.failed", { m: "unknown" });
       return;
     }
-    results.value = r.list ?? [];
+    const list = r.list ?? [];
+    if (isFirst) {
+      ui.results = list;
+      ui.submitted = kw;
+      ui.hasMore = r.hasMore !== false && list.length > 0;
+      ui.page = 1;
+      // 新搜索把列表滚回顶部，否则会停在上一批结果的中间
+      await nextTick();
+      if (scroller.value) scroller.value.scrollTop = 0;
+      search.scrollTop.value = 0;
+    } else {
+      // 去重追加：同一首歌可能被不同平台/不同页重复返回（各平台结果本就有交叉）
+      const seen = new Set(ui.results.map((s) => s.id));
+      const fresh = list.filter((s) => s && !seen.has(s.id));
+      ui.results.push(...fresh);
+      ui.page = page;
+      ui.hasMore = r.hasMore !== false && list.length > 0;
+      // 到达上限：不再允许继续翻，避免内存无限增长
+      if (ui.results.length >= MAX_RESULTS) ui.results = ui.results.slice(0, MAX_RESULTS);
+    }
     // 单平台失败不阻断其它平台：结果照常展示，失败信息以 toast 提示
     if (r.errors?.length) toast(t("online.partialFailed", { m: r.errors.join("；") }));
+    search.persist();
   } catch (e) {
-    if (token !== searchToken) return;
-    results.value = [];
-    searched.value = true;
-    errorMsg.value = t("online.failed", { m: e.message });
+    if (search.isStale(token)) return;
+    if (isFirst) {
+      ui.results = [];
+      ui.searched = true;
+    }
+    ui.errorMsg = t("online.failed", { m: e.message });
   } finally {
-    if (token === searchToken) loading.value = false;
+    if (!search.isStale(token)) {
+      loading.value = false;
+      loadingMore.value = false;
+    }
+  }
+}
+
+function doSearch() {
+  return runSearch(1);
+}
+
+function nextPage() {
+  if (!canNext.value) return;
+  return runSearch(ui.page + 1);
+}
+
+function prevPage() {
+  if (ui.page <= 1 || loading.value) return;
+  // 回上一页只能重搜：各平台都不支持「倒着查」，本地缓存整批结果又太吃内存。
+  // 重搜后按页累积，等价于把结果重放一遍 —— 对用户来说结果一致。
+  replayTo(ui.page - 1);
+}
+
+/** 从头重放到目标页（页码回退时用），期间只显示最后一次的结果 */
+async function replayTo(targetPage) {
+  const pages = Math.max(1, targetPage);
+  loading.value = true;
+  const token = search.nextToken();
+  try {
+    const api = window.pywebview?.api;
+    if (!api || typeof api.searchOnline !== "function") throw new Error("当前环境不支持在线搜索");
+    const all = [];
+    for (let p = 1; p <= pages; p += 1) {
+      const r = await api.searchOnline(ui.keyword.trim(), toPlain(ui.picked), p);
+      if (search.isStale(token)) return;
+      if (!r || !r.ok) throw new Error(r?.message || "unknown");
+      const list = r.list ?? [];
+      const seen = new Set(all.map((s) => s.id));
+      all.push(...list.filter((s) => s && !seen.has(s.id)));
+      if (list.length === 0) break;
+    }
+    ui.results = all;
+    ui.page = pages;
+    ui.hasMore = true;
+    ui.errorMsg = "";
+    search.persist();
+  } catch (e) {
+    if (!search.isStale(token)) ui.errorMsg = t("online.failed", { m: e.message });
+  } finally {
+    if (!search.isStale(token)) loading.value = false;
+  }
+}
+
+function onScroll() {
+  // 记录滚动位置（防抖），切页面回来时还原 —— 否则用户翻回去还得重新滚
+  clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(() => {
+    if (scroller.value) search.scrollTop.value = scroller.value.scrollTop;
+  }, 200);
+}
+
+/** 还原滚动位置（等 DOM 把已有结果渲染出来之后） */
+async function restoreScroll() {
+  if (!ui.results.length) return;
+  await nextTick();
+  if (scroller.value && search.scrollTop.value > 0) {
+    scroller.value.scrollTop = search.scrollTop.value;
   }
 }
 
 function playAt(index) {
-  if (!results.value.length || index < 0) return;
+  if (!ui.results.length || index < 0) return;
   // 以当前结果列表为播放队列，便于 next / prev
-  player.playQueue(results.value, index);
+  player.playQueue(ui.results, index);
 }
 
 function playNext(song) {
@@ -324,7 +462,7 @@ function playCtx() {
   const s = ctx.value.song;
   ctx.value.visible = false;
   if (!s) return;
-  const i = results.value.findIndex((x) => x.id === s.id);
+  const i = ui.results.findIndex((x) => x.id === s.id);
   playAt(i >= 0 ? i : 0);
 }
 
@@ -369,7 +507,20 @@ function formatDuration(sec) {
 }
 
 onMounted(async () => {
+  // 上一次的搜索现场已在 store 构造时从 localStorage 恢复（含 keyword / 结果 / 页码），
+  // 所以这里只需补齐平台列表与自己的滚动位置。
   await Promise.all([loadPlatforms(), online.loadMeta(true), online.loadDownloaded()]);
+  restoreScroll();
+});
+
+// keep-alive 场景（若将来给 router-view 加了缓存）：重新激活时也还原滚动位置
+onActivated(restoreScroll);
+
+onUnmounted(() => {
+  clearTimeout(scrollSaveTimer);
+  // 卸载前把当前滚动位置落定，保证切走再回来停在原处
+  if (scroller.value) search.scrollTop.value = scroller.value.scrollTop;
+  search.persist();
 });
 
 // 播放失败后刷新失败提示：让「这个平台你的源播不了」立刻反映到筛选条上，
@@ -380,6 +531,9 @@ watch(
     if (err) refreshWarnings();
   }
 );
+
+// 每页条数变化时（未来可调）只需重搜一次，这里保持 1 页的语义
+void PAGE_SIZE;
 </script>
 
 <style scoped>
@@ -472,6 +626,44 @@ watch(
 .plat-chip__warn {
   margin-right: 4px;
   font-size: 11px;
+}
+
+/* 结果摘要条：条数 / 页码 / 是否到上限 / 清空 */
+.online-view__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: 12px;
+  color: var(--teyvat-text-secondary);
+  border-bottom: 1px solid var(--teyvat-card-border);
+  flex-wrap: wrap;
+}
+.online-view__meta-dot {
+  opacity: 0.5;
+}
+.online-view__meta-limit {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--teyvat-gold) 40%, transparent);
+  background: color-mix(in srgb, var(--teyvat-gold) 12%, transparent);
+  color: var(--teyvat-gold);
+  cursor: help;
+}
+.online-view__meta-clear {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--teyvat-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.online-view__meta-clear:hover {
+  color: var(--teyvat-danger);
+  background: color-mix(in srgb, var(--teyvat-danger) 12%, transparent);
 }
 
 .row-grid {
@@ -588,6 +780,26 @@ watch(
   color: var(--teyvat-gold);
   opacity: 0.7;
 }
+
+/* 翻页栏：贴在列表末尾 */
+.online-view__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+.pager-btn {
+  padding: 6px 16px;
+  font-size: 12px;
+}
+.pager-info {
+  font-size: 12px;
+  color: var(--teyvat-text-secondary);
+  min-width: 60px;
+  text-align: center;
+}
+
 .online-view__empty {
   text-align: center;
   color: var(--teyvat-text-secondary);

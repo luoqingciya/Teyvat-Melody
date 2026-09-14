@@ -1,9 +1,11 @@
 // 用 CDP 截取真实界面的截图：做排版 / 样式改动时用来自查，比盲改可靠。
 //
 // 用法：
-//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--settings]
+//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--settings] [--search=关键词] [--page=2]
 //     --route    先切到该哈希路由（点侧栏链接，避免与路由初始化竞争）
 //     --settings 打开设置弹窗
+//     --search   在在线搜索页真的搜一次并等出结果（要看结果列表/翻页栏时用）
+//     --page     搜完再点 N-1 次「下一页」（用于给翻页后的状态截图）
 //
 // 会额外输出一张 `*.bottom.png`：把弹窗主体滚到底再截一张，
 // 便于查看设置页下半部分（弹窗主体是内部滚动的，单张图看不全）。
@@ -19,6 +21,8 @@ const args = process.argv.slice(2);
 const out = args.find((a) => !a.startsWith("--")) || path.join(ROOT, "screenshot.png");
 const route = (args.find((a) => a.startsWith("--route=")) || "").replace("--route=", "");
 const openSettings = args.includes("--settings");
+const searchKw = (args.find((a) => a.startsWith("--search=")) || "").replace("--search=", "");
+const targetPage = Number((args.find((a) => a.startsWith("--page=")) || "").replace("--page=", "")) || 1;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -99,6 +103,42 @@ async function waitForPage(timeoutMs = 90000) {
         await sleep(250);
       }
       await sleep(400);
+    }
+
+    // 真的搜一次：翻页栏在结果列表末尾，不搜就截不到。
+    if (searchKw) {
+      await evaluate(`(async () => {
+        const input = document.querySelector('.online-view__input');
+        if (!input) return;
+        input.value = ${JSON.stringify(searchKw)};
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 100));
+        const btn = document.querySelector('.online-view__go');
+        if (btn && !btn.disabled) btn.click();
+      })()`);
+      for (let i = 0; i < 80; i++) {
+        const r = await evaluate("document.querySelectorAll('.online-row').length");
+        if (r.result.value > 0) break;
+        await sleep(500);
+      }
+      // 翻到目标页
+      for (let p = 1; p < targetPage; p++) {
+        const r = await evaluate(`(() => {
+          const pager = document.querySelector('.online-view__pager');
+          const next = pager ? [...pager.querySelectorAll('button')].pop() : null;
+          if (!next || next.disabled) return 'stop';
+          next.click();
+          return 'ok';
+        })()`);
+        if (r.result.value === "stop") break;
+        await sleep(2500);
+      }
+      // 滚到列表末尾，让翻页栏进入视野（否则截图上只有一堆行，看不到下一页按钮）
+      await evaluate(`(() => {
+        const s = document.querySelector('.online-view__scroll');
+        if (s) s.scrollTop = s.scrollHeight;
+      })()`);
+      await sleep(600);
     }
 
     const shot = async (file) => {
