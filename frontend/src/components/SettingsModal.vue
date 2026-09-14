@@ -662,12 +662,16 @@ const cache = ref({
 });
 const cacheMsg = ref("");
 
-/** 字节 → 易读单位（上限选项与占用展示共用） */
+/** 字节 → 易读单位（上限选项与占用展示共用）。
+ *  小体积要走 KB/B —— 歌词缓存通常只有几 KB，一律取整到 MB 会显示成「0 MB」，
+ *  看起来像「什么都没缓存」。 */
 function formatBytes(n) {
   const v = Number(n) || 0;
   if (v <= 0) return "0 MB";
   if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(v % 1024 ** 3 ? 1 : 0)} GB`;
-  return `${Math.round(v / 1024 ** 2)} MB`;
+  if (v >= 1024 ** 2) return `${Math.round(v / 1024 ** 2)} MB`;
+  if (v >= 1024) return `${Math.round(v / 1024)} KB`;
+  return `${v} B`;
 }
 
 async function loadCache() {

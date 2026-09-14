@@ -153,6 +153,26 @@ const KW_SAMPLE_TEXT =
     const fallback = parseLooseJson("{'abslist':[{'SONGNAME':'a' + 'b','MUSICRID':'MUSIC_9'}]}");
     ok("kw：JSON 失败时退回空沙箱求值", fallback.abslist[0].SONGNAME === "ab", JSON.stringify(fallback));
 
+    // 酷我把 & 写成**双重转义**的 \\u0026：响应体里就是两个反斜杠，
+    // JSON.parse 之后仍剩一个字面量 \u0026，不还原就会把「周杰伦\u0026五月天」
+    // 原样显示给用户（真实界面截图里肉眼可见）。这里守住还原逻辑。
+    const amp = normalize("kw", {
+      pid: "9",
+      name: "甲\\u0026乙", // 单层转义：JSON.parse 已还原成 &，这里不该再动
+      singer: "丙\\\\u0026丁", // 双层转义：parse 后仍是字面量 \u0026，必须还原
+      album: "A&amp;B",
+      duration: 1,
+      meta: { rid: "9" },
+    });
+    ok("normalize：还原双重转义的 \\u0026（酷我常见）", amp.artist === "丙&丁", amp.artist);
+    ok("normalize：单层转义不受影响", amp.title === "甲&乙", amp.title);
+    ok("normalize：HTML 实体一并还原", amp.album === "A&B", amp.album);
+
+    const kwAmp = parseKw(
+      parseLooseJson("{'abslist':[{'ARTIST':'周杰伦\\\\u0026五月天','NAME':'志明与春娇','MUSICRID':'MUSIC_1'}]}")
+    );
+    ok("kw：双重转义在入库前已还原（不会显示成 \\u0026）", kwAmp[0].artist === "周杰伦&五月天", kwAmp[0].artist);
+
     // ---- search 边界 ----
     const empty = await search("");
     ok("search：空关键词直接返回空", empty.list.length === 0 && empty.errors.length === 0, JSON.stringify(empty));

@@ -103,10 +103,37 @@ function parseLooseJson(text) {
 
 // ---------------- 归一化 ----------------
 
+/**
+ * 还原文本里的 Unicode 转义与 HTML 实体。
+ *
+ * 酷我接口把 `&` 写成 `\\u0026` —— 注意是**双重转义**：响应体里本来就是 `\\u0026`，
+ * `JSON.parse` 之后再剩一个字面量 `\u0026`，于是界面上直接显示成「周杰伦\u0026五月天」
+ * （截图里肉眼可见）。`&nbsp;` 之类实体同理，parseLooseJson 只顺手处理了空格，
+ * 其余实体与转义统一在这里收口，各平台一起受益。
+ *
+ * 顺序有讲究：先具体实体、后 `&amp;` —— 否则 `&amp;nbsp;`（用户真的想显示 `&nbsp;` 这串字）
+ * 会被先解成 `&nbsp;` 再解成空格，语义就漂了。
+ *
+ * 反斜杠用 `\\+`（一个或多个）：响应体里到底是几层转义看平台心情，
+ * 单层 JSON.parse 就还原了、双层会剩一个，多留几个反斜杠也一并吃掉。
+ */
+function decodeText(s) {
+  return String(s || "")
+    .replace(/\\+u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
 /** 归一化为统一歌曲结构；title/artist 与本地歌曲字段对齐，便于复用现有渲染与通知。 */
 function normalize(source, { pid, name, singer, album, duration, picUrl, meta }) {
-  const title = String(name || "").trim() || "未知歌曲";
-  const artist = String(singer || "").trim();
+  const title = decodeText(name) || "未知歌曲";
+  const artist = decodeText(singer);
   const secs = Math.max(0, Math.round(Number(duration) || 0));
   return {
     id: `online:${source}:${pid}`,
@@ -114,7 +141,7 @@ function normalize(source, { pid, name, singer, album, duration, picUrl, meta })
     source,
     name: title,
     singer: artist,
-    album: String(album || "").trim(),
+    album: decodeText(album),
     duration: secs,
     interval: secs,
     // 远程封面：前端经同源图片代理加载（CSP img-src 'self'，不放宽策略）

@@ -33,6 +33,8 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, watch } from "vue";
+
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: "" },
@@ -45,6 +47,25 @@ const emit = defineEmits(["update:modelValue", "confirm"]);
 function confirm() {
   emit("confirm");
 }
+
+// Esc 关闭：弹窗的通用预期行为，此前只有点遮罩和点 ✕ 两条路。
+// 只监听打开期间，且只在最外层生效（同一时刻只应有一个弹窗）。
+function onKey(e) {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    emit("update:modelValue", false);
+  }
+}
+
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (v) window.addEventListener("keydown", onKey);
+    else window.removeEventListener("keydown", onKey);
+  }
+);
+
+onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 </script>
 
 <style scoped>
