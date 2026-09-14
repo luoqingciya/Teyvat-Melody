@@ -30,6 +30,8 @@ const settingsTab = (args.find((a) => a.startsWith("--tab=")) || "").replace("--
 const TAB_ORDER = ["playback", "appearance", "lyrics", "online", "about"];
 // 「全部音乐」的来源筛选：全部 / 仅本地 / 仅在线
 const sourceFilter = (args.find((a) => a.startsWith("--filter=")) || "").replace("--filter=", "");
+// 在线搜索：默认截图前滚到列表末尾（为了拍到翻页栏）；加此参数则保持顶部
+const keepScroll = args.includes("--keep-scroll");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -137,15 +139,31 @@ async function waitForPage(timeoutMs = 90000) {
       await evaluate(`(async () => {
         const input = document.querySelector('.online-view__input');
         if (!input) return;
-        input.value = ${JSON.stringify(searchKw)};
+        // ⚠️ 必须用原生 setter 触发，直接 input.value = x 不会让 Vue 的 v-model 感知到，
+        //    搜索根本不会发出 —— 于是下面的等待循环会拿到**上一次遗留的结果**，
+        //    截出来的图看起来像「新搜索却停在列表底部」，极具误导性。
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, ${JSON.stringify(searchKw)});
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise((r) => setTimeout(r, 150));
         const btn = document.querySelector('.online-view__go');
         if (btn && !btn.disabled) btn.click();
       })()`);
-      for (let i = 0; i < 80; i++) {
-        const r = await evaluate("document.querySelectorAll('.online-row').length");
-        if (r.result.value > 0) break;
+      // 等**新一批**结果就位：先记下当前的行数与结果条文案，等它们变化。
+      // 只等「有行」是不够的 —— 上一次遗留的结果本来就有行，会立刻满足条件，
+      // 于是截到的是旧结果（还可能停在旧滚动位置）。这是本工具踩过的坑。
+      const snapshot = async () => {
+        const r = await evaluate(`(() => ({
+          rows: document.querySelectorAll('.online-row').length,
+          meta: document.querySelector('.online-view__meta')?.textContent || '',
+        }))()`);
+        return r.result.value || { rows: 0, meta: "" };
+      };
+      const beforeSnap = await snapshot();
+      for (let i = 0; i < 90; i++) {
+        const now = await snapshot();
+        const changed = now.rows !== beforeSnap.rows || now.meta !== beforeSnap.meta;
+        if (now.rows > 0 && changed) break;
         await sleep(500);
       }
       // 翻到目标页
@@ -160,12 +178,15 @@ async function waitForPage(timeoutMs = 90000) {
         if (r.result.value === "stop") break;
         await sleep(2500);
       }
-      // 滚到列表末尾，让翻页栏进入视野（否则截图上只有一堆行，看不到下一页按钮）
-      await evaluate(`(() => {
-        const s = document.querySelector('.online-view__scroll');
-        if (s) s.scrollTop = s.scrollHeight;
-      })()`);
-      await sleep(600);
+      // 滚到列表末尾，让翻页栏进入视野（否则截图上只有一堆行，看不到下一页按钮）。
+      // 想看**列表顶部**（比如核对第一行的内容）时用 --keep-scroll 跳过这一步。
+      if (!keepScroll) {
+        await evaluate(`(() => {
+          const s = document.querySelector('.online-view__scroll');
+          if (s) s.scrollTop = s.scrollHeight;
+        })()`);
+        await sleep(600);
+      }
     }
 
     const shot = async (file) => {

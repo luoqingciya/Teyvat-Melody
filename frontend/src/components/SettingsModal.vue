@@ -98,8 +98,10 @@
               <input v-model="config.crossfade" class="settings__switch" type="checkbox" />
             </label>
 
-            <label class="settings__row">
-              <span>{{ config.crossfade ? t("settings.crossfadeDuration", { s: config.crossfadeDuration }) : t("settings.crossfade") }}</span>
+            <label class="settings__row" :class="{ 'settings__row--dim': !config.crossfade }">
+              <!-- 关闭时不要重复显示开关的名字（上面那行已经是「切歌淡入淡出」了），
+                   而是继续显示「时长」并置灰，用户才知道这个滑块是干什么的。 -->
+              <span>{{ t("settings.crossfadeDuration", { s: config.crossfadeDuration }) }}</span>
               <input
                 v-model.number="config.crossfadeDuration"
                 class="settings__range"
@@ -964,6 +966,11 @@ onUnmounted(() => clearInterval(cacheTimer));
 .settings__panes::-webkit-scrollbar {
   width: var(--space-2);
 }
+/* 轨道显式设为透明：不写的话 Chromium 会用浅色默认轨道，
+   在深色面板上会显出一条突兀的亮边（截图上很明显）。 */
+.settings__panes::-webkit-scrollbar-track {
+  background: transparent;
+}
 .settings__panes::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--teyvat-text-secondary) 36%, transparent);
   border-radius: var(--radius-full);
@@ -1038,6 +1045,10 @@ onUnmounted(() => clearInterval(cacheTimer));
 }
 .settings__row--switch {
   cursor: pointer;
+}
+/* 依赖项关闭时，把从属的那一行整体压暗 —— 光靠滑块 disabled 不够明显 */
+.settings__row--dim > span {
+  opacity: 0.5;
 }
 .settings__themes {
   display: flex;

@@ -216,6 +216,8 @@ const warnings = ref({});
 
 const scroller = ref(null);
 let scrollSaveTimer = 0;
+// 当前界面上的结果属于哪一代（新搜索会换代，换代后不还原旧滚动位置）
+let genAtRestore = search.resultGen.value;
 
 const emptyText = computed(() => {
   if (loading.value) return t("online.searching");
@@ -321,6 +323,9 @@ async function runSearch(page) {
     }
     const list = r.list ?? [];
     if (isFirst) {
+      // 新一批结果：先把上一批的滚动位置作废，否则下面 restoreScroll 会把
+      // 「上次 N 条里的位置」套到这次完全不同的结果上（用户一进来就在列表底部）。
+      search.beginResultSet();
       ui.results = list;
       ui.submitted = kw;
       ui.hasMore = r.hasMore !== false && list.length > 0;
@@ -329,6 +334,7 @@ async function runSearch(page) {
       await nextTick();
       if (scroller.value) scroller.value.scrollTop = 0;
       search.scrollTop.value = 0;
+      genAtRestore = search.resultGen.value; // 记下「这批结果」的代次
     } else {
       // 去重追加：同一首歌可能被不同平台/不同页重复返回（各平台结果本就有交叉）
       const seen = new Set(ui.results.map((s) => s.id));
@@ -411,10 +417,16 @@ function onScroll() {
   }, 200);
 }
 
-/** 还原滚动位置（等 DOM 把已有结果渲染出来之后） */
+/**
+ * 还原滚动位置（等 DOM 把已有结果渲染出来之后）。
+ *
+ * ⚠️ 只在**同一批结果**内还原：`search.resultGen` 每次新搜索都会递增，
+ * 变了说明结果已被换掉，旧的滚动位置没有意义（硬套会让用户落在新列表底部）。
+ */
 async function restoreScroll() {
   if (!ui.results.length) return;
   await nextTick();
+  if (search.resultGen.value !== genAtRestore) return; // 结果已换代 → 不套旧位置
   if (scroller.value && search.scrollTop.value > 0) {
     scroller.value.scrollTop = search.scrollTop.value;
   }

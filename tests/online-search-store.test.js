@@ -184,5 +184,23 @@ const readSaved = () => {
     ok("reset 后落盘仍是用户的勾选", readSaved().picked.join(",") === "kw,kg");
   }
 
+  // ⑩ 滚动位置换代：新一批结果作废旧滚动位置，避免「新搜索落在列表底部」
+  {
+    const m = await freshStore();
+    const s = m.useOnlineSearch();
+    const gen0 = s.resultGen.value;
+    s.scrollTop.value = 4200; // 模拟上次滚到很深的位置
+    s.beginResultSet();
+    ok("新一批结果推进代次", s.resultGen.value > gen0, `${gen0} → ${s.resultGen.value}`);
+    ok("新一批结果清零滚动位置", s.scrollTop.value === 0, String(s.scrollTop.value));
+
+    // reset 也要换代（清空后重搜不该还原到旧位置）
+    const gen1 = s.resultGen.value;
+    s.scrollTop.value = 999;
+    s.reset();
+    ok("reset 推进代次", s.resultGen.value > gen1);
+    ok("reset 清零滚动位置", s.scrollTop.value === 0);
+  }
+
   console.log("\n自检结束");
 })();

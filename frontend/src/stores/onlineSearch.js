@@ -44,6 +44,15 @@ const loading = ref(false);
 const loadingMore = ref(false);
 // 结果区滚动位置：切走再回来要停在原处，否则用户翻回去还得重新滚
 const scrollTop = ref(0);
+/**
+ * 当前这一批结果的「代次」，每次**新搜索**递增。
+ *
+ * ⚠️ 为什么需要它：`scrollTop` 是跟着「这一批结果」的，不是跟页面的。
+ * 旧实现里 restoreScroll 无条件把上次的滚动位置套到新结果上 ——
+ * 上次滚到 120 条里的第 111 行、这次只搜出 20 条，用户一进来就落在列表底部，
+ * 看起来像「搜索结果坏了」。现在滚动位置只在**同一代次**内还原。
+ */
+const resultGen = ref(0);
 let searchToken = 0; // 并发令牌：连续搜索 / 翻页时丢弃过期响应
 
 /**
@@ -133,7 +142,14 @@ function reset() {
   const picked = [...state.picked];
   Object.assign(state, emptyState(), { picked, loadedPlatforms: state.loadedPlatforms });
   scrollTop.value = 0;
+  resultGen.value += 1; // 新一代结果 → 老的滚动位置作废
   flushNow();
+}
+
+/** 新一批结果就位时调用：丢弃上一批结果的滚动位置。 */
+function beginResultSet() {
+  resultGen.value += 1;
+  scrollTop.value = 0;
 }
 
 /**
@@ -195,6 +211,7 @@ export function useOnlineSearch() {
     loading,
     loadingMore,
     scrollTop,
+    resultGen,
     canNext,
     atLimit,
     // 方法
@@ -204,6 +221,7 @@ export function useOnlineSearch() {
     hydrate,
     markPlatformsLoaded,
     setPicked,
+    beginResultSet,
     /** 供组件申请一个请求令牌（判断响应是否过期） */
     nextToken: () => ++searchToken,
     isStale: (token) => token !== searchToken,

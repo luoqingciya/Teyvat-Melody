@@ -537,7 +537,12 @@ const ok = (name, cond, extra) => {
 
       const chips = () => [...document.querySelectorAll('.src-chip')];
       const rows = () => [...document.querySelectorAll('.song-row')];
-      const onlineRows = () => rows().filter((r) => r.querySelector('.tag-online')).length;
+      // ⚠️ 此处**不能**用 .tag-online 判定在线歌曲：那一页已经有来源列，
+      //    标题里的在线标记会被刻意隐藏（否则同一件事说两遍）。
+      //    判据改为「来源列里不是『本地』」—— 也就是这一页自己的信息来源。
+      //    （注意：这段是模板字符串里的代码，注释里也不能写反引号，否则会提前结束字符串。）
+      const isOnlineRow = (r) => !!r.querySelector('.col-source .src-badge');
+      const onlineRows = () => rows().filter(isOnlineRow).length;
       const sourceCells = () => rows().map((r) => {
         const b = r.querySelector('.src-badge');
         return b ? b.textContent.trim() : (r.querySelector('.src-local') ? '本地' : '');
@@ -548,6 +553,10 @@ const ok = (name, cond, extra) => {
       const allOnline = onlineRows();
       const hasSourceCol = !!document.querySelector('.col-source-h');
       const sources = sourceCells();
+      // 音质列的文案（本地歌曲应显示短码率，而不是 "MP3 : 128000k · 44.1kHz" 这种探测直出）
+      const qualities = rows().map((r) => r.querySelector('.col-quality')?.textContent.trim() || '');
+      // 有了来源列之后，标题里的在线标记不应再出现（同一信息不重复表达）
+      const inlineTags = rows().filter((r) => r.querySelector('.tag-online')).length;
 
       // 切到「仅在线」
       const onlyOnline = chips().find((c) => c.textContent.includes('仅在线'));
@@ -566,7 +575,7 @@ const ok = (name, cond, extra) => {
       if (all) all.click();
       await new Promise((r) => setTimeout(r, 300));
 
-      return { labels, allCount, allOnline, hasSourceCol, sources, onlineOnly, localOnly };
+      return { labels, allCount, allOnline, hasSourceCol, sources, onlineOnly, localOnly, qualities, inlineTags };
     })()`);
     console.log("  全部音乐:", JSON.stringify(allView));
     ok("「全部音乐」有来源筛选条（全部 / 仅本地 / 仅在线）", (allView?.labels || []).length === 3, JSON.stringify(allView?.labels));
@@ -600,6 +609,25 @@ const ok = (name, cond, extra) => {
       "「仅本地」+「仅在线」= 全部",
       allView?.localOnly?.rows + allView?.onlineOnly?.rows === allView?.allCount,
       `${allView?.localOnly?.rows} + ${allView?.onlineOnly?.rows} vs ${allView?.allCount}`
+    );
+    // 音质列只放一档短文案（128K / 320K / FLAC）：探测详情留给 title 悬浮。
+    // 早先是 "MP3 : 128000k · 44.1kHz" 直出，列被撑满还比不出高低。
+    // ⚠️ 这里是普通代码，不是模板字符串 —— 正则里写 \\d 会变成「匹配反斜杠+d」，
+    //    必须写成 \d。（同一个坑在模板字符串里恰好相反，别混。）
+    ok(
+      "音质列文案简短（没有 kHz / 超长数字串）",
+      (allView?.qualities || []).every((q) => !/kHz|\d{5,}/.test(q)),
+      JSON.stringify((allView?.qualities || []).slice(0, 6))
+    );
+    ok(
+      "音质列给出了可比较的档位（如 128K / 320K / FLAC）",
+      (allView?.qualities || []).some((q) => /^\d+K$/.test(q) || /^(FLAC|Unknown|未知|—)$/.test(q)),
+      JSON.stringify((allView?.qualities || []).slice(0, 6))
+    );
+    ok(
+      "有来源列时不再重复显示标题内的在线标记",
+      allView?.inlineTags === 0,
+      `inlineTags=${allView?.inlineTags}`
     );
 
     // 回到在线搜索页，后续断言（加入歌单 / 换音质 / 下载）都在那一页
@@ -881,6 +909,7 @@ const ok = (name, cond, extra) => {
     }
   } catch (e) {
     console.log(`FAIL  验证中断  → ${e.message}`);
+    if (process.env.E2E_TRACE) console.log(e.stack);
     process.exitCode = 1;
   } finally {
     try {

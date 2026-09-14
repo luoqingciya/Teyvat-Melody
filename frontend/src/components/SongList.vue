@@ -64,7 +64,12 @@
           </button>
           <span class="col-idx">{{ startIndex + v + 1 }}</span>
           <span class="col-title" :title="song.title">
-            <span v-if="song.online" class="tag-online">{{ t("online.title") }}</span>
+            <!-- 在线歌曲的标记：仅在**没有来源列**的页面显示。
+                 「全部音乐」已经有来源列写明了平台名，再加一个「在线搜索」纯属重复；
+                 而收藏/歌单/最近播放没有那一列，需要靠这个标记区分能否离线播放。 -->
+            <span v-if="song.online && !showSourceFilter" class="tag-online" :title="sourceLabel(song.source)">
+              {{ sourceLabel(song.source) }}
+            </span>
             <span class="col-title__text">
               {{ song.title }}
             </span>
@@ -77,7 +82,7 @@
             }}</span>
             <span v-else class="src-local">{{ t("song.sourceLocal") }}</span>
           </span>
-          <span class="col-quality" :title="qualityLabel(song)">{{ qualityLabel(song) }}</span>
+          <span class="col-quality" :title="qualityDetail(song)">{{ qualityLabel(song) }}</span>
           <span class="col-duration">{{ formatDuration(song.duration) }}</span>
         </div>
       </div>
@@ -340,12 +345,28 @@ function formatDuration(sec) {
 
 function qualityLabel(song) {
   // 在线歌曲没有本地编码信息，展示的是「首选音质」（源声明的标识）
-  if (song.online) return song.quality ? qualityText(song.quality) : t("online.colSource");
+  // ⚠️ 早先无音质时返回 t("online.colSource")（=「来源」），那是把列名当值填进音质列。
+  if (song.online) return song.quality ? qualityText(song.quality) : t("song.qualityUnknown");
+  // 本地歌曲：列里只放**最关键的一档**（码率），完整参数留给 title 悬浮 ——
+  // 早先是 "MP3 : 128000k · 44.1kHz" 这种探测结果直出，列宽被撑爆且没法一眼比较。
+  return localQualityShort(song) || "—";
+}
+
+/** 本地歌曲音质的完整描述（悬浮提示用，比列内文案详细） */
+function qualityDetail(song) {
+  if (song.online) return qualityLabel(song);
   const parts = [];
   if (song.format) parts.push(String(song.format).toUpperCase());
   if (song.bitrate) parts.push(`${Math.round(song.bitrate)}k`);
   if (song.sample_rate) parts.push(`${(song.sample_rate / 1000).toFixed(1)}kHz`);
   return parts.join(" · ") || "—";
+}
+
+/** 列内短文案：优先码率（可与在线歌曲的 320K/FLAC 直接比较），无码率则退回格式名 */
+function localQualityShort(song) {
+  if (song.bitrate) return `${Math.round(song.bitrate / 1000)}K`; // 128000 → 128K
+  if (song.format) return String(song.format).toUpperCase();
+  return "";
 }
 
 // ---- 在线歌曲：加入歌单 / 换音质 / 下载 ----
@@ -477,6 +498,11 @@ onBeforeUnmount(() => {
   padding-top: var(--space-3);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--teyvat-card-border);
+  /* 表头要有实体感：只有一条下边框时，滚动中的行会「顶进」表头看不出分界。
+     加一层极淡底色 + 字母间距，让列标题与数据行明确分层。 */
+  background: rgba(255, 255, 255, 0.03);
+  letter-spacing: 0.02em;
+  font-weight: 500;
 }
 
 .song-scroll {
@@ -593,9 +619,10 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--teyvat-blue) 40%, transparent);
 }
 .src-local {
+  /* 「本地」是绝大多数行的值，不需要抢眼，但也不能淡到看不清 ——
+     原先是 opacity .7 + secondary 色，实际对比度偏低，扫列时几乎看不见。 */
   font-size: 11px;
   color: var(--teyvat-text-secondary);
-  opacity: 0.7;
 }
 .fav-btn {
   border: none;
