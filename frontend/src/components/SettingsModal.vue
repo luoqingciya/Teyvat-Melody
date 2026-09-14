@@ -3,522 +3,566 @@
     :model-value="modelValue"
     :title="t('header.settings')"
     :confirm-text="t('settings.done')"
-    :width="540"
+    :width="900"
     :mask-closable="false"
     @update:model-value="emit('update:modelValue', $event)"
     @confirm="emit('update:modelValue', false)"
   >
+    <!-- 分类标签 + 内容区：设置项多了以后一长条滚到底很难找，
+         改成一栏分类、点一下只显示这一类。左侧标签常驻，右侧独立滚动。 -->
     <div class="settings">
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.playback") }}</h4>
+      <nav class="settings__tabs" role="tablist">
+        <button
+          v-for="tab in TABS"
+          :key="tab.key"
+          class="settings__tab"
+          :class="{ 'settings__tab--on': activeTab === tab.key }"
+          role="tab"
+          :aria-selected="activeTab === tab.key"
+          @click="activeTab = tab.key"
+        >
+          <AppIcon :name="tab.icon" :size="15" />
+          <span>{{ t(tab.label) }}</span>
+          <!-- 有小红点的事项（如源加载失败）在标签上先提示，不用点进去才发现 -->
+          <span v-if="tab.key === 'sources' && sourceCount" class="settings__tab-badge">{{ sourceCount }}</span>
+        </button>
+      </nav>
 
-        <label class="settings__row">
-          <span>{{ t("settings.playMode") }}</span>
-          <select v-model="player.playMode" class="settings__select ui-select">
-            <option value="list">{{ t("settings.modeList") }}</option>
-            <option value="single">{{ t("settings.modeSingle") }}</option>
-            <option value="shuffle">{{ t("settings.modeShuffle") }}</option>
-          </select>
-        </label>
+      <div class="settings__panes">
+        <!-- ============ 播放 ============ -->
+        <div v-show="activeTab === 'playback'" class="settings__pane">
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.playback") }}</h4>
 
-        <label class="settings__row">
-          <span>{{ t("settings.speed") }}</span>
-          <select v-model="config.playbackRate" class="settings__select ui-select" @change="applyPlaybackRate">
-            <option v-for="r in SPEEDS" :key="r" :value="r">{{ r }}x</option>
-          </select>
-        </label>
+            <label class="settings__row">
+              <span>{{ t("settings.playMode") }}</span>
+              <select v-model="player.playMode" class="settings__select ui-select">
+                <option value="list">{{ t("settings.modeList") }}</option>
+                <option value="single">{{ t("settings.modeSingle") }}</option>
+                <option value="shuffle">{{ t("settings.modeShuffle") }}</option>
+              </select>
+            </label>
 
-        <label class="settings__row">
-          <span>{{ t("settings.volume", { p: Math.round(config.volume * 100) }) }}</span>
-          <input
-            v-model.number="config.volume"
-            class="settings__range"
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            @input="applyVolume"
-          />
-        </label>
+            <label class="settings__row">
+              <span>{{ t("settings.speed") }}</span>
+              <select v-model="config.playbackRate" class="settings__select ui-select" @change="applyPlaybackRate">
+                <option v-for="r in SPEEDS" :key="r" :value="r">{{ r }}x</option>
+              </select>
+            </label>
 
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.autoplayNext") }}</span>
-          <input v-model="config.autoplayNext" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.startupResume") }}</span>
-          <input v-model="config.startupResume" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.resumeQueue") }}</span>
-          <input v-model="config.resumeQueue" class="settings__switch" type="checkbox" :disabled="!config.startupResume" />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.globalHotkeys") }}</span>
-          <input v-model="config.globalHotkeys" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.songNotification") }}</span>
-          <input v-model="config.songNotification" class="settings__switch" type="checkbox" />
-        </label>
-      </div>
-
-      <!-- 在线播放缓存 -->
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.onlineCache") }}</h4>
-        <p class="settings__tip">{{ t("settings.cacheTip") }}</p>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.cacheEnable") }}</span>
-          <input
-            class="settings__switch"
-            type="checkbox"
-            :checked="cache.enabled"
-            @change="onToggleCache($event.target.checked)"
-          />
-        </label>
-
-        <div class="settings__row">
-          <span>{{ t("settings.cacheLimit") }}</span>
-          <select
-            class="ui-select settings__select"
-            :value="cache.maxBytes"
-            :disabled="!cache.enabled"
-            @change="onCacheLimit($event.target.value)"
-          >
-            <option v-for="opt in cache.maxBytesOptions || []" :key="opt" :value="opt">
-              {{ formatBytes(opt) }}
-            </option>
-          </select>
-        </div>
-
-        <div class="settings__row">
-          <span class="settings__tip">
-            {{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}<template
-              v-if="cache.partialBytes"
-            >{{ t("settings.cachePartial", { size: formatBytes(cache.partialBytes) }) }}</template>
-            <template v-if="cache.lyricsBytes"
-            >　·　{{ t("settings.cacheLyrics", { n: cache.lyricsFiles || 0, size: formatBytes(cache.lyricsBytes) }) }}</template>
-          </span>
-          <button
-            class="ui-btn ui-btn--ghost settings__action"
-            :disabled="!cache.totalBytes"
-            @click="onClearCache"
-          >
-            {{ t("settings.cacheClear") }}
-          </button>
-        </div>
-
-        <span v-if="cacheMsg" class="settings__tip">{{ cacheMsg }}</span>
-      </div>
-
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.advanced") }}</h4>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.crossfade") }}</span>
-          <input v-model="config.crossfade" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row">
-          <span>{{ config.crossfade ? t("settings.crossfadeDuration", { s: config.crossfadeDuration }) : t("settings.crossfade") }}</span>
-          <input
-            v-model.number="config.crossfadeDuration"
-            class="settings__range"
-            type="range"
-            min="0.2"
-            max="3"
-            step="0.1"
-            :disabled="!config.crossfade"
-          />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.skipSilence") }}</span>
-          <input v-model="config.skipSilence" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.volumeGain", { v: (config.volumeGain >= 0 ? "+" : "") + config.volumeGain }) }}</span>
-          <input
-            v-model.number="config.volumeGain"
-            class="settings__range"
-            type="range"
-            min="-12"
-            max="12"
-            step="1"
-            @change="config.pushAudioFx()"
-          />
-        </label>
-      </div>
-
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.appearance") }}</h4>
-        <label class="settings__row">
-          <span>{{ t("settings.language") }}</span>
-          <select v-model="config.language" class="settings__select ui-select">
-            <option value="zh">中文</option>
-            <option value="en">English</option>
-          </select>
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.theme") }}</span>
-          <div class="settings__themes">
-            <button
-              v-for="th in themes"
-              :key="th.key"
-              class="settings__theme"
-              :class="{ 'settings__theme--on': config.theme === th.key }"
-              :title="t('theme.' + th.key)"
-              :aria-label="t('theme.' + th.key)"
-              :aria-pressed="config.theme === th.key"
-              @click="config.setTheme(th.key)"
-            >
-              <AppIcon :name="th.icon" :size="16" />
-            </button>
-          </div>
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.glassFx") }}</span>
-          <input
-            v-model="config.glassFx"
-            class="settings__switch"
-            type="checkbox"
-            @change="config.setGlassFx(config.glassFx)"
-          />
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.accentLink") }}</span>
-          <input v-model="config.accentLinkTheme" class="settings__switch" type="checkbox" />
-        </label>
-
-        <div class="settings__row settings__row--col">
-          <span>{{ t("settings.accentColor") }}</span>
-          <div class="settings__colors">
-            <label class="settings__color">
-              <span>{{ t("settings.accentCustom") }}</span>
+            <label class="settings__row">
+              <span>{{ t("settings.volume", { p: Math.round(config.volume * 100) }) }}</span>
               <input
-                type="color"
-                class="settings__colorpicker"
-                :value="config.accentColor || defaultAccent"
-                @input="config.setAccent($event.target.value)"
+                v-model.number="config.volume"
+                class="settings__range"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                @input="applyVolume"
               />
             </label>
-            <button
-              v-if="config.accentColor"
-              class="settings__accent-reset"
-              :title="t('settings.accentReset')"
-              :aria-label="t('settings.accentReset')"
-              @click="config.setAccent('')"
-            >
-              {{ t("settings.accentReset") }}
-            </button>
-          </div>
-        </div>
 
-        <label class="settings__row">
-          <span>{{ t("settings.uiScale", { p: Math.round(config.uiScale * 100) }) }}</span>
-          <input
-            v-model.number="config.uiScale"
-            class="settings__range"
-            type="range"
-            min="0.8"
-            max="1.3"
-            step="0.05"
-            @change="config.setUiPrefs()"
-          />
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.uiBaseFontSize", { d: config.uiBaseFontSize }) }}</span>
-          <input
-            v-model.number="config.uiBaseFontSize"
-            class="settings__range"
-            type="range"
-            min="12"
-            max="18"
-            step="1"
-            @change="config.setUiPrefs()"
-          />
-        </label>
-      </div>
-
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.lyrics") }}</h4>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.showTranslation") }}</span>
-          <input v-model="config.showTranslation" class="settings__switch" type="checkbox" />
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.fsFontSize", { d: config.fsFontSize }) }}</span>
-          <input
-            v-model.number="config.fsFontSize"
-            class="settings__range"
-            type="range"
-            min="12"
-            max="32"
-            step="1"
-          />
-        </label>
-
-        <div class="settings__row settings__row--col">
-          <span>{{ t("settings.dlColors") }}</span>
-          <div class="settings__colors">
-            <label class="settings__color">
-              <span>{{ t("settings.dlActive") }}</span>
-              <input v-model="config.dlActiveColor" type="color" class="settings__colorpicker" />
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.autoplayNext") }}</span>
+              <input v-model="config.autoplayNext" class="settings__switch" type="checkbox" />
             </label>
-            <label class="settings__color">
-              <span>{{ t("settings.dlNormal") }}</span>
-              <input v-model="config.dlTextColor" type="color" class="settings__colorpicker" />
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.startupResume") }}</span>
+              <input v-model="config.startupResume" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.resumeQueue") }}</span>
+              <input v-model="config.resumeQueue" class="settings__switch" type="checkbox" :disabled="!config.startupResume" />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.globalHotkeys") }}</span>
+              <input v-model="config.globalHotkeys" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.songNotification") }}</span>
+              <input v-model="config.songNotification" class="settings__switch" type="checkbox" />
+            </label>
+          </div>
+
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.advanced") }}</h4>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.crossfade") }}</span>
+              <input v-model="config.crossfade" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ config.crossfade ? t("settings.crossfadeDuration", { s: config.crossfadeDuration }) : t("settings.crossfade") }}</span>
+              <input
+                v-model.number="config.crossfadeDuration"
+                class="settings__range"
+                type="range"
+                min="0.2"
+                max="3"
+                step="0.1"
+                :disabled="!config.crossfade"
+              />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.skipSilence") }}</span>
+              <input v-model="config.skipSilence" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.volumeGain", { v: (config.volumeGain >= 0 ? "+" : "") + config.volumeGain }) }}</span>
+              <input
+                v-model.number="config.volumeGain"
+                class="settings__range"
+                type="range"
+                min="-12"
+                max="12"
+                step="1"
+                @change="config.pushAudioFx()"
+              />
             </label>
           </div>
         </div>
 
-        <label class="settings__row">
-          <span>{{ t("settings.dlFontSize", { d: config.dlFontSize }) }}</span>
-          <input
-            v-model.number="config.dlFontSize"
-            class="settings__range"
-            type="range"
-            min="16"
-            max="40"
-            step="1"
-          />
-        </label>
+        <!-- ============ 外观 ============ -->
+        <div v-show="activeTab === 'appearance'" class="settings__pane">
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.appearance") }}</h4>
 
-        <label class="settings__row">
-          <span>{{ t("settings.dlFontFamily") }}</span>
-          <select v-model="config.dlFontFamily" class="settings__select ui-select">
-            <option value="Microsoft YaHei">微软雅黑</option>
-            <option value="SimSun">宋体</option>
-            <option value="KaiTi">楷体</option>
-            <option value="SimHei">黑体</option>
-            <option value="FangSong">仿宋</option>
-            <option value="Consolas">Consolas（等宽）</option>
-          </select>
-        </label>
+            <label class="settings__row">
+              <span>{{ t("settings.language") }}</span>
+              <select v-model="config.language" class="settings__select ui-select">
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
+            </label>
 
-        <label class="settings__row">
-          <span>{{ t("settings.dlBgMode") }}</span>
-          <select v-model="config.dlBgMode" class="settings__select ui-select">
-            <option value="transparent">{{ t("settings.dlBgTransparent") }}</option>
-            <option value="card">{{ t("settings.dlBgCard") }}</option>
-          </select>
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.lyricOffset", { ms: config.lyricOffset }) }}</span>
-          <input
-            v-model.number="config.lyricOffset"
-            class="settings__range"
-            type="range"
-            min="-1000"
-            max="1000"
-            step="50"
-          />
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.dlKaraoke") }}</span>
-          <select v-model="config.dlKaraokeMode" class="settings__select ui-select">
-            <option value="line">{{ t("settings.dlKaraokeLine") }}</option>
-            <option value="karaoke">{{ t("settings.dlKaraokeWord") }}</option>
-          </select>
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.dlLine") }}</span>
-          <select v-model="config.dlLineMode" class="settings__select ui-select">
-            <option value="single">{{ t("settings.dlLineSingle") }}</option>
-            <option value="dual">{{ t("settings.dlLineDual") }}</option>
-            <option value="multi">{{ t("settings.dlLineMulti") }}</option>
-          </select>
-        </label>
-
-        <label class="settings__row settings__row--switch">
-          <span>{{ t("settings.dlShowProgress") }}</span>
-          <input v-model="config.dlShowProgress" class="settings__switch" type="checkbox" />
-        </label>
-      </div>
-
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.fonts") }}</h4>
-
-        <label class="settings__row">
-          <span>{{ t("settings.uiFontFamily") }}</span>
-          <select v-model="config.uiFontFamily" class="settings__select ui-select" @change="applyFont">
-            <option v-for="o in fontOptions" :key="o.value || 'default'" :value="o.value">{{ o.label }}</option>
-          </select>
-        </label>
-
-        <label class="settings__row">
-          <span>{{ t("settings.fsFontFamily") }}</span>
-          <select v-model="config.fsFontFamily" class="settings__select ui-select">
-            <option v-for="o in fontOptions" :key="o.value || 'default'" :value="o.value">{{ o.label }}</option>
-          </select>
-        </label>
-
-        <div class="settings__row settings__row--col">
-          <span>{{ t("settings.customFonts") }}</span>
-          <label class="settings__upload">
-            {{ t("settings.uploadFont") }}
-            <input type="file" accept=".ttf,.otf,.woff,.woff2" @change="onFontFile" />
-          </label>
-        </div>
-
-        <ul v-if="config.customFonts.length" class="settings__fonts">
-          <li v-for="f in config.customFonts" :key="f.id">
-            <span>{{ f.label }}</span>
-            <button class="settings__fontdel" :title="t('settings.removeFont')" :aria-label="t('settings.removeFont')" @click="removeFont(f)">✕</button>
-          </li>
-        </ul>
-      </div>
-
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("settings.sources") }}</h4>
-        <p class="settings__tip">{{ t("settings.sourcesTip") }}</p>
-
-        <div class="settings__row settings__row--col">
-          <button class="ui-btn ui-btn--ghost settings__action" @click="onImportSource">
-            {{ t("settings.importSource") }}
-          </button>
-          <span v-if="sourceMsg" class="settings__tip" :class="{ 'settings__tip--err': sourceMsgErr }">{{ sourceMsg }}</span>
-        </div>
-
-        <ul v-if="sources.length" class="settings__fonts settings__srcs">
-          <li v-for="s in sources" :key="s.id" class="settings__src">
-            <div class="settings__srcinfo">
-              <div class="settings__srcname">
-                <span>{{ s.name }}</span>
-                <span v-if="s.version" class="settings__srcver">v{{ s.version }}</span>
-                <span v-if="s.updateInfo" class="settings__srcbadge settings__srcbadge--upd" :title="s.updateInfo.log">{{ t("settings.sourceUpdate") }}</span>
+            <label class="settings__row">
+              <span>{{ t("settings.theme") }}</span>
+              <div class="settings__themes">
+                <button
+                  v-for="th in themes"
+                  :key="th.key"
+                  class="settings__theme"
+                  :class="{ 'settings__theme--on': config.theme === th.key }"
+                  :title="t('theme.' + th.key)"
+                  :aria-label="t('theme.' + th.key)"
+                  :aria-pressed="config.theme === th.key"
+                  @click="config.setTheme(th.key)"
+                >
+                  <AppIcon :name="th.icon" :size="16" />
+                </button>
               </div>
-              <div v-if="s.author" class="settings__srcmeta">{{ s.author }}</div>
-              <div v-if="s.error" class="settings__srcerr">{{ t("settings.sourceError") }}：{{ s.error }}</div>
-              <div v-else class="settings__srcbadges">
-                <span v-for="(decl, key) in s.sources" :key="key" class="settings__srcbadge" :title="(decl.qualitys || []).join(' / ')">
-                  {{ key }}<template v-if="decl.qualitys && decl.qualitys.length"> · {{ decl.qualitys[decl.qualitys.length - 1] }}</template>
-                </span>
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.glassFx") }}</span>
+              <input
+                v-model="config.glassFx"
+                class="settings__switch"
+                type="checkbox"
+                @change="config.setGlassFx(config.glassFx)"
+              />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.accentLink") }}</span>
+              <input v-model="config.accentLinkTheme" class="settings__switch" type="checkbox" />
+            </label>
+
+            <div class="settings__row settings__row--col">
+              <span>{{ t("settings.accentColor") }}</span>
+              <div class="settings__colors">
+                <label class="settings__color">
+                  <span>{{ t("settings.accentCustom") }}</span>
+                  <input
+                    type="color"
+                    class="settings__colorpicker"
+                    :value="config.accentColor || defaultAccent"
+                    @input="config.setAccent($event.target.value)"
+                  />
+                </label>
+                <button
+                  v-if="config.accentColor"
+                  class="settings__accent-reset"
+                  :title="t('settings.accentReset')"
+                  :aria-label="t('settings.accentReset')"
+                  @click="config.setAccent('')"
+                >
+                  {{ t("settings.accentReset") }}
+                </button>
               </div>
             </div>
-            <div class="settings__srcops">
-              <button class="settings__fontdel" :title="t('settings.sourceReload')" :aria-label="t('settings.sourceReload')" @click="onReloadSource(s)">↻</button>
-              <button class="settings__fontdel" :title="t('settings.sourceRemove')" :aria-label="t('settings.sourceRemove')" @click="onRemoveSource(s)">✕</button>
+
+            <label class="settings__row">
+              <span>{{ t("settings.uiScale", { p: Math.round(config.uiScale * 100) }) }}</span>
+              <input
+                v-model.number="config.uiScale"
+                class="settings__range"
+                type="range"
+                min="0.8"
+                max="1.3"
+                step="0.05"
+                @change="config.setUiPrefs()"
+              />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.uiBaseFontSize", { d: config.uiBaseFontSize }) }}</span>
+              <input
+                v-model.number="config.uiBaseFontSize"
+                class="settings__range"
+                type="range"
+                min="12"
+                max="18"
+                step="1"
+                @change="config.setUiPrefs()"
+              />
+            </label>
+          </div>
+
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.fonts") }}</h4>
+
+            <label class="settings__row">
+              <span>{{ t("settings.uiFontFamily") }}</span>
+              <select v-model="config.uiFontFamily" class="settings__select ui-select" @change="applyFont">
+                <option v-for="o in fontOptions" :key="o.value || 'default'" :value="o.value">{{ o.label }}</option>
+              </select>
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.fsFontFamily") }}</span>
+              <select v-model="config.fsFontFamily" class="settings__select ui-select">
+                <option v-for="o in fontOptions" :key="o.value || 'default'" :value="o.value">{{ o.label }}</option>
+              </select>
+            </label>
+
+            <div class="settings__row settings__row--col">
+              <span>{{ t("settings.customFonts") }}</span>
+              <label class="settings__upload">
+                {{ t("settings.uploadFont") }}
+                <input type="file" accept=".ttf,.otf,.woff,.woff2" @change="onFontFile" />
+              </label>
+            </div>
+
+            <ul v-if="config.customFonts.length" class="settings__fonts">
+              <li v-for="f in config.customFonts" :key="f.id">
+                <span>{{ f.label }}</span>
+                <button class="settings__fontdel" :title="t('settings.removeFont')" :aria-label="t('settings.removeFont')" @click="removeFont(f)">✕</button>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- ============ 歌词 ============ -->
+        <div v-show="activeTab === 'lyrics'" class="settings__pane">
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.lyrics") }}</h4>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.showTranslation") }}</span>
+              <input v-model="config.showTranslation" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.fsFontSize", { d: config.fsFontSize }) }}</span>
+              <input
+                v-model.number="config.fsFontSize"
+                class="settings__range"
+                type="range"
+                min="12"
+                max="32"
+                step="1"
+              />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.lyricOffset", { ms: config.lyricOffset }) }}</span>
+              <input
+                v-model.number="config.lyricOffset"
+                class="settings__range"
+                type="range"
+                min="-1000"
+                max="1000"
+                step="50"
+              />
+            </label>
+          </div>
+
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.desktopLyrics") }}</h4>
+
+            <div class="settings__row settings__row--col">
+              <span>{{ t("settings.dlColors") }}</span>
+              <div class="settings__colors">
+                <label class="settings__color">
+                  <span>{{ t("settings.dlActive") }}</span>
+                  <input v-model="config.dlActiveColor" type="color" class="settings__colorpicker" />
+                </label>
+                <label class="settings__color">
+                  <span>{{ t("settings.dlNormal") }}</span>
+                  <input v-model="config.dlTextColor" type="color" class="settings__colorpicker" />
+                </label>
+              </div>
+            </div>
+
+            <label class="settings__row">
+              <span>{{ t("settings.dlFontSize", { d: config.dlFontSize }) }}</span>
+              <input
+                v-model.number="config.dlFontSize"
+                class="settings__range"
+                type="range"
+                min="16"
+                max="40"
+                step="1"
+              />
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.dlFontFamily") }}</span>
+              <select v-model="config.dlFontFamily" class="settings__select ui-select">
+                <option value="Microsoft YaHei">微软雅黑</option>
+                <option value="SimSun">宋体</option>
+                <option value="KaiTi">楷体</option>
+                <option value="SimHei">黑体</option>
+                <option value="FangSong">仿宋</option>
+                <option value="Consolas">Consolas（等宽）</option>
+              </select>
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.dlBgMode") }}</span>
+              <select v-model="config.dlBgMode" class="settings__select ui-select">
+                <option value="transparent">{{ t("settings.dlBgTransparent") }}</option>
+                <option value="card">{{ t("settings.dlBgCard") }}</option>
+              </select>
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.dlKaraoke") }}</span>
+              <select v-model="config.dlKaraokeMode" class="settings__select ui-select">
+                <option value="line">{{ t("settings.dlKaraokeLine") }}</option>
+                <option value="karaoke">{{ t("settings.dlKaraokeWord") }}</option>
+              </select>
+            </label>
+
+            <label class="settings__row">
+              <span>{{ t("settings.dlLine") }}</span>
+              <select v-model="config.dlLineMode" class="settings__select ui-select">
+                <option value="single">{{ t("settings.dlLineSingle") }}</option>
+                <option value="dual">{{ t("settings.dlLineDual") }}</option>
+                <option value="multi">{{ t("settings.dlLineMulti") }}</option>
+              </select>
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.dlShowProgress") }}</span>
+              <input v-model="config.dlShowProgress" class="settings__switch" type="checkbox" />
+            </label>
+          </div>
+        </div>
+
+        <!-- ============ 在线播放 ============ -->
+        <div v-show="activeTab === 'online'" class="settings__pane">
+          <!-- 自定义源：在线播放能力全靠它，所以放在最前面 -->
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.sources") }}</h4>
+            <p class="settings__tip">{{ t("settings.sourcesTip") }}</p>
+
+            <div class="settings__row settings__row--col">
+              <button class="ui-btn ui-btn--ghost settings__action" @click="onImportSource">
+                {{ t("settings.importSource") }}
+              </button>
+              <span v-if="sourceMsg" class="settings__tip" :class="{ 'settings__tip--err': sourceMsgErr }">{{ sourceMsg }}</span>
+            </div>
+
+            <ul v-if="sources.length" class="settings__fonts settings__srcs">
+              <li v-for="s in sources" :key="s.id" class="settings__src">
+                <div class="settings__srcinfo">
+                  <div class="settings__srcname">
+                    <span>{{ s.name }}</span>
+                    <span v-if="s.version" class="settings__srcver">v{{ s.version }}</span>
+                    <span v-if="s.updateInfo" class="settings__srcbadge settings__srcbadge--upd" :title="s.updateInfo.log">{{ t("settings.sourceUpdate") }}</span>
+                  </div>
+                  <div v-if="s.author" class="settings__srcmeta">{{ s.author }}</div>
+                  <div v-if="s.error" class="settings__srcerr">{{ t("settings.sourceError") }}：{{ s.error }}</div>
+                  <div v-else class="settings__srcbadges">
+                    <span v-for="(decl, key) in s.sources" :key="key" class="settings__srcbadge" :title="(decl.qualitys || []).join(' / ')">
+                      {{ key }}<template v-if="decl.qualitys && decl.qualitys.length"> · {{ decl.qualitys[decl.qualitys.length - 1] }}</template>
+                    </span>
+                  </div>
+                </div>
+                <div class="settings__srcops">
+                  <button class="settings__fontdel" :title="t('settings.sourceReload')" :aria-label="t('settings.sourceReload')" @click="onReloadSource(s)">↻</button>
+                  <button class="settings__fontdel" :title="t('settings.sourceRemove')" :aria-label="t('settings.sourceRemove')" @click="onRemoveSource(s)">✕</button>
+                  <input
+                    class="settings__switch"
+                    type="checkbox"
+                    :checked="s.enabled"
+                    :title="s.enabled ? t('settings.sourceDisable') : t('settings.sourceEnable')"
+                    @change="onToggleSource(s, $event.target.checked)"
+                  />
+                </div>
+              </li>
+            </ul>
+            <span v-else class="settings__tip">{{ t("settings.noSources") }}</span>
+          </div>
+
+          <!-- 在线播放缓存 -->
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.onlineCache") }}</h4>
+            <p class="settings__tip">{{ t("settings.cacheTip") }}</p>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.cacheEnable") }}</span>
               <input
                 class="settings__switch"
                 type="checkbox"
-                :checked="s.enabled"
-                :title="s.enabled ? t('settings.sourceDisable') : t('settings.sourceEnable')"
-                @change="onToggleSource(s, $event.target.checked)"
+                :checked="cache.enabled"
+                @change="onToggleCache($event.target.checked)"
               />
-            </div>
-          </li>
-        </ul>
-        <span v-else class="settings__tip">{{ t("settings.noSources") }}</span>
-      </div>
+            </label>
 
-      <!-- 关于与更新：查 GitHub Release → 下载 → 拉起安装向导 -->
-      <div class="settings__group">
-        <h4 class="settings__label">{{ t("update.title") }}</h4>
-
-        <div class="settings__row">
-          <span>{{ t("update.current") }}</span>
-          <span class="settings__value">v{{ appVersion || "—" }}</span>
-        </div>
-
-        <!-- 数据目录：装的是安装版还是免安装版，数据落在哪里，用户应该能自己看到
-             （安装版升级时安装目录会被整个删掉，数据因此放在别处 —— 见 dataRoot.js） -->
-        <div v-if="dataDir" class="settings__row">
-          <span>{{ t("settings.dataDir") }}</span>
-          <span class="settings__value settings__value--path" :title="dataDir">{{ dataDir }}</span>
-        </div>
-        <div v-if="dataDir" class="settings__row settings__row--end">
-          <button class="ui-btn ui-btn--ghost settings__action" @click="openDataDir">
-            {{ t("settings.openDataDir") }}
-          </button>
-        </div>
-
-        <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
-        <div class="settings__row settings__row--end">
-          <button
-            class="ui-btn ui-btn--ghost settings__action"
-            :disabled="updater.checking.value"
-            @click="onCheckUpdate"
-          >
-            {{ updater.checking.value ? t("update.checking") : t("update.check") }}
-          </button>
-        </div>
-
-        <p v-if="updater.error.value" class="settings__tip settings__tip--err">{{ updater.error.value }}</p>
-
-        <template v-else-if="updater.info.value?.ok">
-          <p v-if="!updater.info.value.hasUpdate" class="settings__tip">{{ t("update.upToDate") }}</p>
-          <template v-else>
-            <div class="settings__notice">
-              <span class="settings__notice-title">{{ t("update.available", { v: updater.info.value.latest }) }}</span>
-              <span v-if="updater.info.value.publishedAt" class="settings__notice-date">
-                {{ updater.info.value.publishedAt.slice(0, 10) }}
-              </span>
-            </div>
-
-            <!-- 下载进度 -->
-            <div v-if="updater.downloading.value" class="settings__progress">
-              <div class="settings__progress-bar" :style="{ width: updater.progress.value + '%' }"></div>
-              <span class="settings__progress-text">{{ t("update.downloading", { p: updater.progress.value }) }}</span>
-            </div>
-
-            <div class="settings__actions">
-              <button
-                class="ui-btn settings__action"
-                :disabled="updater.downloading.value"
-                @click="updater.downloadAndInstall()"
+            <div class="settings__row">
+              <span>{{ t("settings.cacheLimit") }}</span>
+              <select
+                class="ui-select settings__select"
+                :value="cache.maxBytes"
+                :disabled="!cache.enabled"
+                @change="onCacheLimit($event.target.value)"
               >
-                {{ updater.info.value.installed ? t("update.downloadInstall") : t("update.download") }}
-              </button>
+                <option v-for="opt in cache.maxBytesOptions || []" :key="opt" :value="opt">
+                  {{ formatBytes(opt) }}
+                </option>
+              </select>
+            </div>
+
+            <div class="settings__row">
+              <span class="settings__tip">
+                {{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}<template
+                  v-if="cache.partialBytes"
+                >{{ t("settings.cachePartial", { size: formatBytes(cache.partialBytes) }) }}</template>
+                <template v-if="cache.lyricsBytes"
+                >　·　{{ t("settings.cacheLyrics", { n: cache.lyricsFiles || 0, size: formatBytes(cache.lyricsBytes) }) }}</template>
+              </span>
               <button
                 class="ui-btn ui-btn--ghost settings__action"
-                :disabled="updater.downloading.value"
-                @click="updater.openPage(updater.info.value.pageUrl)"
+                :disabled="!cache.totalBytes"
+                @click="onClearCache"
               >
-                {{ t("update.openPage") }}
-              </button>
-              <button class="ui-btn ui-btn--ghost settings__action" @click="onSkipUpdate">
-                {{ t("update.skip") }}
+                {{ t("settings.cacheClear") }}
               </button>
             </div>
 
-            <details v-if="updater.info.value.notes" class="settings__notes">
-              <summary>{{ t("update.notes") }}</summary>
-              <pre>{{ updater.info.value.notes }}</pre>
-            </details>
-          </template>
-        </template>
+            <span v-if="cacheMsg" class="settings__tip">{{ cacheMsg }}</span>
+          </div>
+        </div>
 
-        <p v-if="config.skipUpdateVersion" class="settings__tip">
-          {{ t("update.skipped", { v: config.skipUpdateVersion }) }}
-        </p>
-      </div>
+        <!-- ============ 关于与更新 ============ -->
+        <div v-show="activeTab === 'about'" class="settings__pane">
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("update.title") }}</h4>
 
-      <div class="settings__reset">
-        <button class="settings__reset-btn" @click="resetSettings">{{ t("settings.reset") }}</button>
+            <div class="settings__row">
+              <span>{{ t("update.current") }}</span>
+              <span class="settings__value">v{{ appVersion || "—" }}</span>
+            </div>
+
+            <!-- 数据目录：装的是安装版还是免安装版、数据落在哪里，用户应该能自己看到
+                 （两种分发方式数据都跟 EXE 同级，升级靠 NSIS 宏保住 —— 见 dataRoot.js） -->
+            <div v-if="dataDir" class="settings__row">
+              <span>{{ t("settings.dataDir") }}</span>
+              <span class="settings__value settings__value--path" :title="dataDir">{{ dataDir }}</span>
+            </div>
+            <div v-if="dataDir" class="settings__row settings__row--end">
+              <button class="ui-btn ui-btn--ghost settings__action" @click="openDataDir">
+                {{ t("settings.openDataDir") }}
+              </button>
+            </div>
+
+            <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
+            <div class="settings__row settings__row--end">
+              <button
+                class="ui-btn ui-btn--ghost settings__action"
+                :disabled="updater.checking.value"
+                @click="onCheckUpdate"
+              >
+                {{ updater.checking.value ? t("update.checking") : t("update.check") }}
+              </button>
+            </div>
+
+            <p v-if="updater.error.value" class="settings__tip settings__tip--err">{{ updater.error.value }}</p>
+
+            <template v-else-if="updater.info.value?.ok">
+              <p v-if="!updater.info.value.hasUpdate" class="settings__tip">{{ t("update.upToDate") }}</p>
+              <template v-else>
+                <div class="settings__notice">
+                  <span class="settings__notice-title">{{ t("update.available", { v: updater.info.value.latest }) }}</span>
+                  <span v-if="updater.info.value.publishedAt" class="settings__notice-date">
+                    {{ updater.info.value.publishedAt.slice(0, 10) }}
+                  </span>
+                </div>
+
+                <!-- 下载进度 -->
+                <div v-if="updater.downloading.value" class="settings__progress">
+                  <div class="settings__progress-bar" :style="{ width: updater.progress.value + '%' }"></div>
+                  <span class="settings__progress-text">{{ t("update.downloading", { p: updater.progress.value }) }}</span>
+                </div>
+
+                <div class="settings__actions">
+                  <button
+                    class="ui-btn settings__action"
+                    :disabled="updater.downloading.value"
+                    @click="updater.downloadAndInstall()"
+                  >
+                    {{ updater.info.value.installed ? t("update.downloadInstall") : t("update.download") }}
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--ghost settings__action"
+                    :disabled="updater.downloading.value"
+                    @click="updater.openPage(updater.info.value.pageUrl)"
+                  >
+                    {{ t("update.openPage") }}
+                  </button>
+                  <button class="ui-btn ui-btn--ghost settings__action" @click="onSkipUpdate">
+                    {{ t("update.skip") }}
+                  </button>
+                </div>
+
+                <details v-if="updater.info.value.notes" class="settings__notes">
+                  <summary>{{ t("update.notes") }}</summary>
+                  <pre>{{ updater.info.value.notes }}</pre>
+                </details>
+              </template>
+            </template>
+
+            <p v-if="config.skipUpdateVersion" class="settings__tip">
+              {{ t("update.skipped", { v: config.skipUpdateVersion }) }}
+            </p>
+          </div>
+
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.reset") }}</h4>
+            <p class="settings__tip">{{ t("settings.resetTip") }}</p>
+            <div class="settings__row settings__row--end">
+              <button class="settings__reset-btn" @click="resetSettings">{{ t("settings.reset") }}</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </AppModal>
 </template>
 
 <script setup>
-import { computed, onUnmounted, ref, watch } from "vue";
-import AppModal from "./AppModal.vue";
+import { computed, onUnmounted, ref, watch } from "vue";import AppModal from "./AppModal.vue";
 import { useConfigStore } from "@/stores/config";
 import { usePlayerStore } from "@/stores/player";
 import { useI18n } from "@/utils/i18n";
@@ -532,6 +576,27 @@ const emit = defineEmits(["update:modelValue"]);
 const config = useConfigStore();
 const player = usePlayerStore();
 const { t } = useI18n();
+
+// ---- 分类标签 ----
+// 设置项变多（播放/外观/歌词/在线源/关于）后，一长条滚到底既难找也难回顾，
+// 改成左侧分类、右侧只显示当前这一类。图标沿用项目既有 AppIcon 名称。
+const TABS = [
+  { key: "playback", label: "settings.tabPlayback", icon: "play" },
+  { key: "appearance", label: "settings.tabAppearance", icon: "palette" },
+  { key: "lyrics", label: "settings.tabLyrics", icon: "list-music" },
+  { key: "online", label: "settings.tabOnline", icon: "cloud" },
+  { key: "about", label: "settings.tabAbout", icon: "info" },
+];
+// 记住上次停留的分类（弹窗关掉再开回到原处，不用每次重新点）
+const TAB_KEY = "teyvat-melody:settingsTab";
+const activeTab = ref(localStorage.getItem(TAB_KEY) || "playback");
+watch(activeTab, (v) => {
+  try {
+    localStorage.setItem(TAB_KEY, v);
+  } catch {
+    /* 忽略配额错误 */
+  }
+});
 
 // 自定义主题主色未设置时，取色器需要一个合法的 #rrggbb 回退值。
 // 用当前主题的默认金色，避免把空字符串绑到 <input type="color"> 触发控制台告警。
@@ -635,6 +700,8 @@ const sources = ref([]);
 const sourceMsg = ref("");
 const sourceMsgErr = ref(false);
 let sourceMsgTimer = 0;
+// 侧栏标签上的数量徽标：不用点进「在线播放」也知道导了几个源
+const sourceCount = computed(() => sources.value.length);
 
 // ---- 关于与更新 ----
 const updater = useUpdater();
@@ -822,17 +889,80 @@ onUnmounted(() => clearInterval(cacheTimer));
 </script>
 
 <style scoped>
+/* 两栏：左侧分类标签（常驻），右侧内容区独立滚动。
+   高度交给 AppModal 的 body（max-height 82vh + overflow），这里只保证默认占满。 */
 .settings {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: var(--space-5);
+  min-height: 460px;
+}
+
+/* ---- 分类标签 ---- */
+.settings__tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--teyvat-card-border);
+  padding-right: var(--space-2);
+}
+.settings__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 8px var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--teyvat-text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.settings__tab:hover {
+  background: color-mix(in srgb, var(--teyvat-text-primary) 7%, transparent);
+  color: var(--teyvat-text-primary);
+}
+.settings__tab--on {
+  background: color-mix(in srgb, var(--teyvat-gold) 14%, transparent);
+  color: var(--teyvat-gold);
+  font-weight: var(--font-weight-semibold);
+}
+/* 数量徽标（当前只用于自定义源个数） */
+.settings__tab-badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--teyvat-text-secondary) 22%, transparent);
+  color: var(--teyvat-text-primary);
+  font-size: 11px;
+  font-weight: var(--font-weight-normal);
+  text-align: center;
+  line-height: 16px;
+}
+.settings__tab--on .settings__tab-badge {
+  background: color-mix(in srgb, var(--teyvat-gold) 26%, transparent);
+}
+
+/* ---- 内容区 ---- */
+.settings__panes {
+  min-width: 0;
+}
+.settings__pane {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
+
 .settings__group {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
-/* 分组之间加分隔线：设置项变多后，靠留白已不足以区分板块 */
+/* 同一分类内多个板块之间加分隔线：靠留白已不足以区分 */
 .settings__group + .settings__group {
   padding-top: var(--space-3);
   border-top: 1px solid var(--teyvat-card-border);
@@ -1006,13 +1136,6 @@ onUnmounted(() => clearInterval(cacheTimer));
 .settings__fontdel:hover {
   color: var(--teyvat-danger);
   background: color-mix(in srgb, var(--teyvat-danger) 12%, transparent);
-}
-.settings__reset {
-  display: flex;
-  justify-content: center;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--teyvat-card-border);
-  margin-top: var(--space-1);
 }
 .settings__reset-btn {
   padding: var(--space-2) var(--space-5);
