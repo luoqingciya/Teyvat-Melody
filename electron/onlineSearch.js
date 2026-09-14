@@ -264,11 +264,18 @@ function parseKw(data) {
 }
 
 // ---------------- 平台适配器（取数 + 解析） ----------------
+//
+// 各平台的分页参数名与**起始值**都不一样，是这几家的历史包袱，逐一说明：
+//   · tx：p 从 1 开始
+//   · kg：page 从 1 开始
+//   · wy：offset 是**条数偏移**，从 0 开始（page 1 → 0，page 2 → limit）
+//   · kw：pn 是**页索引**，从 0 开始（page 1 → 0）
+// 所以统一按「1 起的页码」对外，转换只发生在这里。
 
-async function searchTx(keyword, limit) {
+async function searchTx(keyword, limit, page) {
   const qs = new URLSearchParams({
     w: keyword,
-    p: "1",
+    p: String(page),
     n: String(limit),
     format: "json",
     aggr: "1",
@@ -278,10 +285,10 @@ async function searchTx(keyword, limit) {
   return parseTx(await getJson(`https://c.y.qq.com/soso/fcgi-bin/client_search_cp?${qs}`));
 }
 
-async function searchKg(keyword, limit) {
+async function searchKg(keyword, limit, page) {
   const qs = new URLSearchParams({
     keyword,
-    page: "1",
+    page: String(page),
     pagesize: String(limit),
     platform: "WebFilter",
     userid: "-1",
@@ -294,8 +301,13 @@ async function searchKg(keyword, limit) {
   return parseKg(await getJson(`https://songsearch.kugou.com/song_search_v2?${qs}`));
 }
 
-async function searchWy(keyword, limit) {
-  const body = new URLSearchParams({ s: keyword, type: "1", limit: String(limit), offset: "0" }).toString();
+async function searchWy(keyword, limit, page) {
+  const body = new URLSearchParams({
+    s: keyword,
+    type: "1",
+    limit: String(limit),
+    offset: String((page - 1) * limit),
+  }).toString();
   const data = await getJson("https://music.163.com/api/cloudsearch/pc", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Referer: "https://music.163.com/" },
@@ -304,13 +316,13 @@ async function searchWy(keyword, limit) {
   return parseWy(data);
 }
 
-async function searchKw(keyword, limit) {
+async function searchKw(keyword, limit, page) {
   const qs = new URLSearchParams({
     all: keyword,
     ft: "music",
     itemset: "web_2013",
     client: "kt",
-    pn: "0",
+    pn: String(page - 1),
     rn: String(limit),
     rformat: "json",
     encoding: "utf8",
@@ -327,27 +339,36 @@ const SEARCHERS = { tx: searchTx, kg: searchKg, wy: searchWy, kw: searchKw };
  * 并发搜索多个平台；**单个平台失败不影响其它平台**（错误收集在 errors 里）。
  * @param {string} keyword 关键词
  * @param {string[]} [sources] 要查询的平台，缺省为四平台全查
- * @param {number} [limit] 每平台返回条数
- * @returns {Promise<{list: object[], errors: string[]}>}
+ * @param {number} [limit] 每平台每页返回条数
+ * @param {number} [page] 页码，**从 1 开始**（对外统一 1 起，各平台差异在适配器里转换）
+ * @returns {Promise<{list: object[], errors: string[], page: number, limit: number, hasMore: boolean}>}
  */
-async function search(keyword, sources, limit = 30) {
+async function search(keyword, sources, limit = 30, page = 1) {
   const kw = String(keyword || "").trim();
-  if (!kw) return { list: [], errors: [] };
+  if (!kw) return { list: [], errors: [], page: 1, limit, hasMore: false };
   const picked = (Array.isArray(sources) && sources.length ? sources : DEFAULT_SOURCES).filter((s) => SEARCHERS[s]);
-  if (!picked.length) return { list: [], errors: ["没有可用的搜索平台"] };
+  if (!picked.length) return { list: [], errors: ["没有可用的搜索平台"], page: 1, limit, hasMore: false };
+
+  const n = Math.max(1, Number(limit) || 30);
+  const p = Math.max(1, Number(page) || 1);
 
   const results = await Promise.all(
     picked.map(async (source) => {
       try {
-        return { list: await SEARCHERS[source](kw, limit), error: null };
+        return { list: await SEARCHERS[source](kw, n, p), error: null };
       } catch (e) {
         return { list: [], error: `${source}: ${e.message}` };
       }
     })
   );
+  // 只有**所有**平台都空才算到底：某个平台翻到尽头、别的还有，不该停掉翻页
+  const anyFullPage = results.some((r) => r.list.length >= n);
   return {
     list: results.flatMap((r) => r.list),
     errors: results.filter((r) => r.error).map((r) => r.error),
+    page: p,
+    limit: n,
+    hasMore: anyFullPage,
   };
 }
 

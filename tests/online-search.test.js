@@ -179,6 +179,11 @@ const KW_SAMPLE_TEXT =
 
     const bogus = await search("晴天", ["nope"]);
     ok("search：非法平台返回明确错误", bogus.list.length === 0 && /没有可用的搜索平台/.test(bogus.errors[0] || ""), JSON.stringify(bogus));
+
+    // ---- 分页：各平台的页码参数名与起始值都不同，这里守住转换 ----
+    // 用本地 HTTP 服务器接住请求，按 URL 里的分页参数决定返回几条，
+    // 从而既能验参数也验 hasMore 推导（不依赖外网）。
+    await testPagination();
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
     process.exitCode = 1;
@@ -186,3 +191,167 @@ const KW_SAMPLE_TEXT =
     console.log("\n自检结束");
   }
 })();
+
+/**
+ * 分页自检。
+ *
+ * 各平台约定（是这几家的历史包袱，不能想当然）：
+ *   · tx：`p`，从 1 开始
+ *   · kg：`page`，从 1 开始
+ *   · wy：`offset`，是**条数偏移**（page 1 → 0）
+ *   · kw：`pn`，是**页索引**，从 0 开始（page 1 → 0）
+ * 对策：对外统一「1 起的页码」，转换只发生在适配器里 —— 本测试就是守住这条边界。
+ */
+async function testPagination() {
+  const http = require("http");
+  const seen = []; // 记录每个平台收到的分页参数
+
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url, "http://localhost");
+    const path = u.pathname;
+    // POST 的 wy 请求：参数在 body 里，这里统一读出来
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const params = new URLSearchParams(req.method === "POST" ? body : u.search);
+      const pick = (k) => params.get(k);
+      // 让「第 2 页」返回 1 条（模拟到底），第 1 页返回 2 条（满页 → hasMore）
+      const isSecondPage = (() => {
+        if (path.includes("client_search_cp")) return pick("p") === "2";
+        if (path.includes("song_search_v2")) return pick("page") === "2";
+        if (path.includes("cloudsearch")) return pick("offset") === "2";
+        if (path.includes("r.s")) return pick("pn") === "1";
+        return false;
+      })();
+      seen.push({ path, p: pick("p"), page: pick("page"), offset: pick("offset"), pn: pick("pn"), n: pick("n") || pick("pagesize") || pick("limit") || pick("rn") });
+
+      const n = Number(pick("n") || pick("pagesize") || pick("limit") || pick("rn") || 2);
+      const count = isSecondPage ? 1 : n;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (path.includes("client_search_cp")) {
+        res.end(
+          JSON.stringify({
+            data: {
+              song: {
+                list: Array.from({ length: count }, (_, i) => ({
+                  songmid: `tx${isSecondPage ? 2 : 1}_${i}`,
+                  songname: "t",
+                  singer: [],
+                  interval: 100,
+                  albumname: "a",
+                })),
+              },
+            },
+          })
+        );
+      } else if (path.includes("song_search_v2")) {
+        res.end(
+          JSON.stringify({
+            data: {
+              lists: Array.from({ length: count }, (_, i) => ({
+                FileHash: `kg${isSecondPage ? 2 : 1}_${i}`,
+                SongName: "t",
+                SingerName: "s",
+                Duration: 100,
+              })),
+            },
+          })
+        );
+      } else if (path.includes("cloudsearch")) {
+        res.end(
+          JSON.stringify({
+            result: {
+              songs: Array.from({ length: count }, (_, i) => ({
+                id: isSecondPage ? 2000 + i : 1000 + i,
+                name: "t",
+                ar: [],
+                al: {},
+                dt: 100000,
+              })),
+            },
+          })
+        );
+      } else {
+        res.end(
+          "{'abslist':[" +
+            Array.from(
+              { length: count },
+              (_, i) => `{'SONGNAME':'t','ARTIST':'s','DURATION':'100','MUSICRID':'MUSIC_kw${isSecondPage ? 2 : 1}_${i}'}`
+            ).join(",") +
+            "]}"
+        );
+      }
+    });
+  });
+
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  // 四个平台的接口地址是硬编码 https 的，外网在本机被沙箱拦着。
+  // 这里拦下 http/https 两个模块的 request，把出站请求改写到本地服务器 ——
+  // **统一用 http.request 发出**（本地服务器是明文 HTTP，若仍走 https 会握手失败）。
+  const mod = require("../electron/onlineSearch");
+  const httpMod = require("http");
+  const httpsMod = require("https");
+  const origHttpRequest = httpMod.request;
+  const origHttpsRequest = httpsMod.request;
+
+  const rewrite =
+    () =>
+    function (options, cb) {
+      if (typeof options === "object" && options.hostname && options.hostname !== "127.0.0.1") {
+        const target = new URL(options.path || "/", base);
+        return origHttpRequest.call(
+          this,
+          { ...options, hostname: target.hostname, port: target.port, path: target.pathname + target.search },
+          cb
+        );
+      }
+      return origHttpRequest.apply(this, arguments);
+    };
+  httpMod.request = rewrite();
+  httpsMod.request = rewrite();
+
+  try {
+    // 第 1 页：每平台 2 条 × 4 平台 = 8 条，且 hasMore 应为 true（有平台返回了满页）
+    const p1 = await mod.search("晴天", ["tx", "kg", "wy", "kw"], 2, 1);
+    ok("分页：第 1 页四平台合计 8 条（每平台 2 条）", p1.list.length === 8, String(p1.list.length));
+    ok("分页：第 1 页 hasMore=true（有平台返回满页）", p1.hasMore === true, String(p1.hasMore));
+    ok("分页：回传当前页与每页条数", p1.page === 1 && p1.limit === 2, JSON.stringify({ page: p1.page, limit: p1.limit }));
+
+    // 各平台的参数名与起始值
+    const calls1 = seen.filter((s) => s.path);
+    const tx1 = calls1.find((s) => s.path.includes("client_search_cp"));
+    ok("分页：tx 用 p，且第 1 页 p=1", tx1.p === "1", JSON.stringify(tx1));
+    const kg1 = calls1.find((s) => s.path.includes("song_search_v2"));
+    ok("分页：kg 用 page，且第 1 页 page=1", kg1.page === "1", JSON.stringify(kg1));
+    const wy1 = calls1.find((s) => s.path.includes("cloudsearch"));
+    ok("分页：wy 用 offset（条数偏移），第 1 页 offset=0", wy1.offset === "0", JSON.stringify(wy1));
+    const kw1 = calls1.find((s) => s.path.includes("r.s"));
+    ok("分页：kw 用 pn（页索引 0 起），第 1 页 pn=0", kw1.pn === "0", JSON.stringify(kw1));
+
+    seen.length = 0;
+    // 第 2 页：每平台退到只剩 1 条 × 4 = 4 条，且 hasMore 应为 false（没有平台再返回满页）
+    const p2 = await mod.search("晴天", ["tx", "kg", "wy", "kw"], 2, 2);
+    ok("分页：第 2 页四平台合计 4 条（每平台 1 条）", p2.list.length === 4, String(p2.list.length));
+    ok("分页：第 2 页没有满页 → hasMore=false", p2.hasMore === false, String(p2.hasMore));
+    ok("分页：第 2 页的结果与第 1 页 id 不同（确实翻了页）", p2.list.every((s) => !p1.list.some((x) => x.id === s.id)));
+
+    const tx2 = seen.find((s) => s.path.includes("client_search_cp"));
+    ok("分页：tx 第 2 页 p=2", tx2.p === "2", JSON.stringify(tx2));
+    const kg2 = seen.find((s) => s.path.includes("song_search_v2"));
+    ok("分页：kg 第 2 页 page=2", kg2.page === "2", JSON.stringify(kg2));
+    const wy2 = seen.find((s) => s.path.includes("cloudsearch"));
+    ok("分页：wy 第 2 页 offset=2（= (2-1)×2）", wy2.offset === "2", JSON.stringify(wy2));
+    const kw2 = seen.find((s) => s.path.includes("r.s"));
+    ok("分页：kw 第 2 页 pn=1（= 2-1）", kw2.pn === "1", JSON.stringify(kw2));
+
+    // 单平台失败不影响其它平台 —— 翻页时尤其重要，否则一个平台挂了连翻页都点不动
+    const partial = await mod.search("晴天", ["tx", "nope"], 2, 1);
+    ok("分页：非法平台被过滤后仍能返回其它平台结果", partial.list.length > 0, JSON.stringify(partial.list.length));
+  } finally {
+    httpMod.request = origHttpRequest;
+    httpsMod.request = origHttpsRequest;
+    server.close();
+  }
+}

@@ -891,7 +891,8 @@ ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
 });
 
 // 在线搜索：搜索走平台公开接口（与自定义源无关），但只查有源支持的平台。
-ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
+// page 从 1 开始；翻页由渲染进程累加，主进程只负责透传给各平台适配器。
+ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
   const available = playablePlatforms();
   const picked = (Array.isArray(sources) && sources.length ? sources : available).filter((s) =>
     available.includes(s)
@@ -906,7 +907,7 @@ ipcMain.handle("online:search", async (_e, { keyword, sources }) => {
     };
   }
   try {
-    const r = await onlineSearch.search(keyword, picked);
+    const r = await onlineSearch.search(keyword, picked, undefined, page);
     return { ok: true, ...r, availableSources: available };
   } catch (e) {
     return { ok: false, list: [], errors: [], availableSources: available, message: e.message };

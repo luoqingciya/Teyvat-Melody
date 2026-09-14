@@ -56,9 +56,9 @@ api.reloadSource = (id) => invoke("source:reload", { id });
 // 在线歌曲播放：取真实音频 URL（音质降级 + 换源重试在主进程完成）
 api.getOnlineUrl = (source, musicInfo, quality) =>
   invoke("online:getUrl", { source, musicInfo, quality });
-// 在线搜索：可播放平台 + 关键词搜索
+// 在线搜索：可播放平台 + 关键词搜索（page 从 1 开始，翻页时递增）
 api.getOnlinePlatforms = () => invoke("online:platforms");
-api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sources });
+api.searchOnline = (keyword, sources, page) => invoke("online:search", { keyword, sources, page: page || 1 });
 // 在线歌曲歌词（翻译内联、逐字已展开，渲染进程零解析）
 api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo });
 // 检查更新：查 GitHub Release 最新版本（主进程比对版本号后回传结果）
