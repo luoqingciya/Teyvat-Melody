@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -153,12 +154,18 @@ def discard(tmp: Optional[Path]) -> None:
         pass
 
 
-def _iter_entries():
+def _iter_entries(include_partial: bool = False):
+    """遍历缓存文件。include_partial=True 时也带上未完成的 `.part`。
+
+    `.part` 是「边播边写」的中间产物：播放中它一直在长大，但只有读完才转正。
+    统计占用时必须算上它 —— 否则播放期间界面上看到的数字纹丝不动，
+    用户会以为缓存没生效（这正是最初被报上来的现象）。
+    """
     d = cache_dir()
     if not d.is_dir():
         return
     for p in d.glob("*"):
-        if p.suffix == ".part":
+        if p.suffix == ".part" and not include_partial:
             continue
         try:
             st = p.stat()
@@ -167,19 +174,42 @@ def _iter_entries():
         yield st.st_mtime, st.st_size, p
 
 
+# 未完成的临时文件超过这个时长仍无写入，视为被遗弃（应用被杀等）
+_ABANDONED_PART_SECONDS = 3600
+
+
+def _clean_abandoned_parts() -> int:
+    """清理被遗弃的 `.part`（应用异常退出后残留），返回清理个数。"""
+    now = time.time()
+    removed = 0
+    for mtime, _size, p in _iter_entries(include_partial=True):
+        if p.suffix != ".part":
+            continue
+        if now - mtime > _ABANDONED_PART_SECONDS:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def evict() -> None:
     """超出容量上限时，从最久未使用的开始删，直到回到上限内。"""
+    _clean_abandoned_parts()
     cfg = load_config()
     limit = cfg["maxBytes"]
     if limit <= 0:
         return
     with _evict_lock:
-        entries = list(_iter_entries())
+        # 容量统计含 `.part`（它同样占盘），但淘汰只动已完成的条目 ——
+        # 删掉正在写的临时文件会打断当前播放
+        entries = list(_iter_entries(include_partial=True))
         total = sum(size for _mtime, size, _p in entries)
         if total <= limit:
             return
-        entries.sort()  # mtime 升序 = 最旧的在前
-        for _mtime, size, p in entries:
+        removable = sorted((e for e in entries if e[2].suffix != ".part"))
+        for _mtime, size, p in removable:
             if total <= limit:
                 break
             try:
@@ -190,19 +220,28 @@ def evict() -> None:
 
 
 def stats() -> dict:
-    """缓存占用情况（设置页展示）。"""
+    """缓存占用情况（设置页展示）。
+
+    `bytes` 含进行中的 `.part`（同样是磁盘占用），另单独给出 `partialBytes`，
+    便于界面区分「已缓存」与「正在下载」。
+    """
     cfg = load_config()
     total = 0
+    partial = 0
     count = 0
-    for _mtime, size, _p in _iter_entries():
+    for _mtime, size, p in _iter_entries(include_partial=True):
         total += size
-        count += 1
+        if p.suffix == ".part":
+            partial += size
+        else:
+            count += 1
     return {
         "enabled": cfg["enabled"],
         "maxBytes": cfg["maxBytes"],
         "maxBytesOptions": MAX_BYTES_OPTIONS,
         "bytes": total,
         "files": count,
+        "partialBytes": partial,
     }
 
 

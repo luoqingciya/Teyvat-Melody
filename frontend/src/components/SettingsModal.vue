@@ -97,7 +97,11 @@
         </div>
 
         <div class="settings__row">
-          <span class="settings__tip">{{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}</span>
+          <span class="settings__tip">
+            {{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}<template
+              v-if="cache.partialBytes"
+            >{{ t("settings.cachePartial", { size: formatBytes(cache.partialBytes) }) }}</template>
+          </span>
           <button class="ui-btn ui-btn--ghost settings__action" :disabled="!cache.bytes" @click="onClearCache">
             {{ t("settings.cacheClear") }}
           </button>

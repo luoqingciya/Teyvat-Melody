@@ -7,6 +7,7 @@
 """
 import http.server
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -287,6 +288,32 @@ def main() -> int:
     ok("后台补完：已下 30% 以上值得继续", _worth_finishing(4 * mb, 10 * mb))
     ok("后台补完：已下不足 30% 不值得继续", not _worth_finishing(2 * mb, 10 * mb))
     ok("后台补完：总量未知时按已下大小判断", _worth_finishing(2 * mb, 0))
+
+    # ---- 占用统计必须含进行中的 .part ----
+    # 否则播放期间 `.part` 一直在长大、界面上的数字却纹丝不动，用户会以为缓存没生效
+    online_cache.clear()
+    part = online_cache.temp_path("kw:part:320k")
+    part.write_bytes(b"p" * 4096)
+    st = online_cache.stats()
+    ok("统计：进行中的 .part 计入占用", st["bytes"] == 4096 and st["files"] == 0, json.dumps(st))
+    ok("统计：单独给出 partialBytes 供界面区分", st["partialBytes"] == 4096, json.dumps(st))
+
+    # 淘汰只动已完成条目：删掉正在写的临时文件会打断当前播放
+    online_cache.save_config({"maxBytes": 2048})  # 上限比 .part 还小
+    online_cache.evict()
+    ok("淘汰：不删除进行中的 .part", part.is_file(), "临时文件被误删")
+    online_cache.save_config({"maxBytes": 1024 ** 3})
+
+    # 被遗弃的 .part（应用被杀后残留、长时间无写入）应被清理
+    stale = online_cache.temp_path("kw:stale:320k")
+    stale.write_bytes(b"s" * 128)
+    old_at = time.time() - online_cache._ABANDONED_PART_SECONDS - 10
+    os.utime(stale, (old_at, old_at))
+    online_cache.evict()
+    ok("淘汰：清理被遗弃的 .part", not stale.is_file(), "陈旧临时文件未被清理")
+
+    online_cache.clear()
+    ok("清空后占用归零", online_cache.stats()["bytes"] == 0, json.dumps(online_cache.stats()))
 
     server.shutdown()
     return 1 if globals().get("_failed") else 0
