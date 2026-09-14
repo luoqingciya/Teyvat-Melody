@@ -43,6 +43,11 @@ def cache_dir() -> Path:
     return _root_cache_dir() / "audio"
 
 
+def lyrics_dir() -> Path:
+    """歌词缓存目录（由主进程写入，Flask 只负责统计与清空）。"""
+    return _root_cache_dir() / "lyrics"
+
+
 def _config_path() -> Path:
     return _root_cache_dir() / "config.json"
 
@@ -154,14 +159,14 @@ def discard(tmp: Optional[Path]) -> None:
         pass
 
 
-def _iter_entries(include_partial: bool = False):
+def _iter_entries(include_partial: bool = False, directory: Optional[Path] = None):
     """遍历缓存文件。include_partial=True 时也带上未完成的 `.part`。
 
     `.part` 是「边播边写」的中间产物：播放中它一直在长大，但只有读完才转正。
     统计占用时必须算上它 —— 否则播放期间界面上看到的数字纹丝不动，
     用户会以为缓存没生效（这正是最初被报上来的现象）。
     """
-    d = cache_dir()
+    d = directory if directory is not None else cache_dir()
     if not d.is_dir():
         return
     for p in d.glob("*"):
@@ -172,6 +177,16 @@ def _iter_entries(include_partial: bool = False):
         except OSError:
             continue
         yield st.st_mtime, st.st_size, p
+
+
+def _dir_usage(directory: Path) -> tuple[int, int]:
+    """目录占用（字节数, 文件数）。目录不存在时返回 (0, 0)。"""
+    total = 0
+    count = 0
+    for _mtime, size, _p in _iter_entries(include_partial=True, directory=directory):
+        total += size
+        count += 1
+    return total, count
 
 
 # 未完成的临时文件超过这个时长仍无写入，视为被遗弃（应用被杀等）
@@ -224,6 +239,10 @@ def stats() -> dict:
 
     `bytes` 含进行中的 `.part`（同样是磁盘占用），另单独给出 `partialBytes`，
     便于界面区分「已缓存」与「正在下载」。
+
+    `lyricsBytes` / `lyricsFiles` 是**歌词缓存**（主进程写入的 JSON，单文件几 KB）。
+    它单独列出而不是并进 `bytes` —— 容量上限只约束音频，混在一起会让用户
+    觉得「明明没超上限怎么就被清了」。`totalBytes` 才是磁盘总占用。
     """
     cfg = load_config()
     total = 0
@@ -235,6 +254,7 @@ def stats() -> dict:
             partial += size
         else:
             count += 1
+    lyrics_bytes, lyrics_files = _dir_usage(lyrics_dir())
     return {
         "enabled": cfg["enabled"],
         "maxBytes": cfg["maxBytes"],
@@ -242,15 +262,19 @@ def stats() -> dict:
         "bytes": total,
         "files": count,
         "partialBytes": partial,
+        "lyricsBytes": lyrics_bytes,
+        "lyricsFiles": lyrics_files,
+        "totalBytes": total + lyrics_bytes,
     }
 
 
 def clear() -> dict:
-    """清空缓存（含未完成的临时文件）。"""
+    """清空缓存（音频 + 歌词，含未完成的临时文件）。"""
     removed = 0
     freed = 0
-    d = cache_dir()
-    if d.is_dir():
+    for d in (cache_dir(), lyrics_dir()):
+        if not d.is_dir():
+            continue
         for p in d.glob("*"):
             try:
                 freed += p.stat().st_size

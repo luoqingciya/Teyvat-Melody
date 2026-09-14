@@ -261,3 +261,55 @@ def write_tags(path: Path, title: str = "", artist: str = "", album: str = "") -
         return True
     except Exception:
         return False
+
+
+def write_cover(path: Path, data: bytes) -> bool:
+    """把封面图嵌入音频文件（MP3 / FLAC / M4A），失败返回 False。
+
+    用于在线下载：CDN 取回的文件本身不带封面，若不嵌入，下载回来的歌
+    在其它播放器里就是「没有封面的裸文件」。
+    """
+    if mutagen is None or not data:
+        return False
+    try:
+        audio = mutagen.File(path)
+        if audio is None:
+            return False
+        mime = _image_mime(data)
+        if isinstance(audio, FLAC):
+            pic = Picture()
+            pic.type = 3  # front cover
+            pic.mime = mime
+            pic.desc = "Cover"
+            pic.data = data
+            audio.clear_pictures()
+            audio.add_picture(pic)
+        elif isinstance(audio, MP3):
+            from mutagen.id3 import APIC
+
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.delall("APIC")
+            audio.tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+        elif isinstance(audio, MP4):
+            from mutagen.mp4 import MP4Cover
+
+            fmt = MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags["covr"] = [MP4Cover(data, imageformat=fmt)]
+        else:
+            return False
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _image_mime(data: bytes) -> str:
+    """按魔数判断图片格式（封面写入需要正确的 MIME，否则部分播放器不认）。"""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    return "image/jpeg"

@@ -198,6 +198,59 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 
 > 已知边界：Windows 上正在被 `send_file` 播放的文件删不掉，`clear()`/`evict()` 会静默跳过，下次再清即可。
 
+### 3.8 在线歌曲入库 / 下载 / 音质切换（Phase 5）— `library_service` + `app/api/online.py`
+
+**动机**：收藏、歌单、最近播放、播放统计这些机制**全都挂在 `songs.id` 上**。
+在线歌曲此前只有 `online:{平台}:{平台ID}` 这样的字符串 ID，于是这些功能一律用不了。
+
+**做法（一句话）**：让在线歌曲在 `songs` 表里**占一行**。
+
+`songs` 新增列：`online_source`（空串=本地文件）、`online_id`、`online_quality`、
+`cover_url`、`online_meta`（完整 musicInfo 的 JSON）。`path` 用 `online://{平台}/{平台ID}` 占位
+（该列 NOT NULL + UNIQUE，占位值同时保证重复入库命中同一行）。
+
+于是：
+
+| 能力 | 实现 |
+|---|---|
+| 收藏 | 复用 `songs.favorite` 与既有 `/api/favorites` |
+| 加入歌单 | 复用 `playlist_songs` 与既有 `/api/playlists/<id>/songs` |
+| 最近播放 / 播放统计 | 入库后有了整数 id，`pushRecent` 与 `playback_history` 直接可用 |
+| 音乐库列表 | `all_songs()` 加 `online_source = ''`，在线歌曲**不会**混进本地曲库 |
+| 编辑标签 / 歌词 | 无本地文件可写，只落库（后端按 `online_source` 分支） |
+
+**为什么存 `online_meta`**：源脚本解析地址时要的是平台专有字段
+（kw 的 `DC_TARGETID`、kg 的 `album_id`、tx 的 `media_mid`…），只存一个 id
+下次从收藏里播放就会解析失败。
+
+**下载**（`POST /api/online/download`）—— 两步，职责分明：
+
+1. 渲染进程让**主进程**按用户选的音质解析出真实地址（含降级与换源）——源脚本只在主进程里；
+2. 把地址交给**后端**取流落盘到 `<根目录>/music/`，并：
+
+   - 文件名取 `歌手 - 歌名.ext`，重名自动加序号（不覆盖）
+   - 封面：经同源图片代理取回 → 存进 `songs.cover` BLOB **并嵌入文件标签**
+   - 歌词：主进程已解析好 → 序列化回 LRC 写成同名 `.lrc`（**只写行级时间轴**，
+     逐字是 LX/酷狗私有格式，写进 .lrc 会让其它播放器显示出一堆 `<0,300>`）
+   - 标签：`write_tags` 写回文件，文件离开本应用也带着正确的歌名歌手
+   - `source_path = online://{平台}/{平台ID}`：既能追溯来源，也让搜索页标「已下载」
+
+   下载结果与扫描入库的歌**完全等价**（可离线播放、可编辑、可再入歌单）。
+
+> **缓存复用**：若这首歌刚播过、字节已在本地缓存里，下载会**直接复制**（秒完成），不再回源。
+
+**进度**：下载是同步请求，进度放在后端内存里，前端每 500ms 轮询
+`/api/online/download/progress?key=…`。无损一首 50MB，没有进度反馈用户会以为卡死。
+
+**音质切换**：`playerStore.switchOnlineQuality()` 重新解析地址并从**原位置续播**
+（换源会换一条 URL，进度得自己搬）；不改变播放/暂停状态 —— 用户只是换音质，
+不该顺带把暂停中的歌放起来。选中的音质写回歌曲对象（入库的还会记进 `online_quality`）。
+
+**歌词缓存**：`cache/lyrics/*.json`，键为「平台 + 平台ID」（与音质无关，各音质共用一份），
+7 天 TTL，过期即删；开关跟随设置页的缓存开关（主进程每次取歌词前读一次 `cache/config.json`）。
+`stats()` 单独给出 `lyricsBytes`/`lyricsFiles` 与 `totalBytes` —— 容量上限只管音频，
+混进同一个数字会让用户觉得「明明没超上限怎么就被清了」。
+
 ## 4. 风险与对策
 
 | 风险 | 对策 |
@@ -255,6 +308,7 @@ await sourceHost.request(scriptId, source, action, info)  // 调脚本 request h
 | **Phase 2** ✅ 已完成 2026-09-13 | 播放链路：musicUrl 调用 + Flask 代理 + playerStore 接入 + 音质降级/换源 | 手工构造在线歌曲可完整播放、可 seek、失败自动降档 |
 | **Phase 3** ✅ 已完成 2026-09-13 | 在线搜索（四平台适配器）+ 搜索视图 | 关键词搜索 → 结果列表 → 点击播放全链路通畅 |
 | **Phase 4** ✅ 已完成 2026-09-13 | 歌词/封面/逐字解析 + 通知、桌面歌词、迷你播放器适配 | 在线歌曲歌词（含逐字）正常显示，各子窗口状态同步 |
+| **Phase 5** ✅ 已完成 2026-09-14 | 在线歌曲入库 + 下载（可选音质）+ 音质切换 + 收藏/歌单 + 歌词缓存 | 在线歌曲可收藏、可入歌单、可下载成完整本地歌曲，音质可切换且续播不跳回开头 |
 
 ## 6. 附：关键数据结构
 

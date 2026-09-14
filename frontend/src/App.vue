@@ -183,20 +183,22 @@ onMounted(async () => {
   updateTimer = setTimeout(() => updater.checkOnStartup(), 6000);
 });
 
-/** 启动时继续播放：优先恢复上次播放队列（当前曲目进度由断点续播精确还原），否则回退到续播最近一首 */
+/** 启动时继续播放：优先恢复上次播放队列（当前曲目进度由断点续播精确还原），否则回退到续播最近一首。
+ *  反查用 library.allSongs（含已入库的在线歌曲），否则收藏/歌单里的在线条目会被静默丢掉。 */
 function resumeLastPlayed() {
   if (!config.startupResume) return;
-  if (config.resumeQueue && player.restoreQueue(library.songList)) {
+  const pool = library.allSongs;
+  if (config.resumeQueue && player.restoreQueue(pool)) {
     player._pendingRestore = true; // 仅启动续播恢复进度；之后切歌 / 选歌都从头播
     player.playQueue(player.queue, player.currentIndex);
     return;
   }
   const lastId = config.recentSongs[0];
   if (lastId == null) return;
-  const song = library.songList.find((s) => s.id === lastId);
+  const song = pool.find((s) => s.id === lastId);
   if (!song) return;
   player._pendingRestore = true;
-  player.playSong(song, library.songList);
+  player.playSong(song, pool);
 }
 
 /** 应用系统级全局快捷键：把当前开关状态同步到 Electron 主进程（后台也可遥控播放） */

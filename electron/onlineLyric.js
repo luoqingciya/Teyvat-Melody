@@ -11,9 +11,109 @@
 //   这样 showTranslation 开关在主界面、全屏、桌面歌词三处自动生效。
 // - words 为逐字时间轴：有则桌面歌词走**真逐字**，无则回退按行插值。
 const zlib = require("zlib");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const { request } = require("./onlineSearch");
 
 const TIMEOUT = 12000;
+
+// ---------------- 歌词缓存 ----------------
+// 歌词内容基本不变，没必要每次切歌都重新请求平台接口（酷狗还要走两步）。
+// 存放于 <软件根目录>/cache/lyrics/，由主进程按 TTL 复用；设置页的「清空缓存」会一并清掉。
+// 开关跟随设置页的「在线播放缓存」—— 关掉缓存就不写也不读，避免用户以为关了还在占盘。
+let _cacheDir = "";
+let _cacheEnabled = true;
+let _ttlMs = 7 * 24 * 3600 * 1000; // 7 天
+// 歌词文件很小（单份 JSON 几 KB），但仍设个上限兜底，防止长年累月无限增长
+const _MAX_FILES = 3000;
+const _MAX_BYTES = 64 * 1024 * 1024;
+
+/** 由主进程告知缓存目录（路径由 dataRoot 决定，本模块不自行猜测） */
+function setCacheDir(dir) {
+  _cacheDir = dir || "";
+}
+
+/** 由主进程告知缓存开关（与设置页的音频缓存共用同一个配置） */
+function setCacheEnabled(enabled) {
+  _cacheEnabled = enabled !== false;
+}
+
+function _cacheFile(key) {
+  return path.join(_cacheDir, crypto.createHash("sha1").update(String(key)).digest("hex") + ".json");
+}
+
+function _readCache(key) {
+  if (!_cacheEnabled || !_cacheDir || !key) return null;
+  const f = _cacheFile(key);
+  try {
+    const st = fs.statSync(f);
+    if (_ttlMs > 0 && Date.now() - st.mtimeMs > _ttlMs) {
+      try {
+        fs.unlinkSync(f); // 过期即删，别让旧文件一直占着
+      } catch {
+        /* 删不掉也无所谓 */
+      }
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(f, "utf8"));
+  } catch {
+    return null; // 不存在 / 损坏都当作未命中
+  }
+}
+
+function _writeCache(key, data) {
+  if (!_cacheEnabled || !_cacheDir || !key) return;
+  try {
+    fs.mkdirSync(_cacheDir, { recursive: true });
+    fs.writeFileSync(_cacheFile(key), JSON.stringify(data), "utf8");
+    _prune();
+  } catch {
+    /* 写缓存失败不影响本次取歌词 */
+  }
+}
+
+/** 超出文件数/体积上限时，按最久未修改的顺序删到限额内 */
+function _prune() {
+  try {
+    const entries = fs
+      .readdirSync(_cacheDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => {
+        const full = path.join(_cacheDir, name);
+        try {
+          const st = fs.statSync(full);
+          return { full, mtime: st.mtimeMs, size: st.size };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    let total = entries.reduce((sum, e) => sum + e.size, 0);
+    if (entries.length <= _MAX_FILES && total <= _MAX_BYTES) return;
+    entries.sort((a, b) => a.mtime - b.mtime);
+    let count = entries.length;
+    for (const e of entries) {
+      if (count <= _MAX_FILES && total <= _MAX_BYTES) break;
+      try {
+        fs.unlinkSync(e.full);
+        total -= e.size;
+        count -= 1;
+      } catch {
+        /* 单个删不掉就跳过 */
+      }
+    }
+  } catch {
+    /* 目录不可读 → 放弃本次清理 */
+  }
+}
+
+/** 缓存键：平台 + 平台ID（与音质无关，同一首歌各音质共用一份歌词） */
+function _lyricCacheKey(source, info) {
+  const id = info.rid ?? info.songmid ?? info.hash ?? info.id ?? info.songId ?? info.mid ?? "";
+  if (!id) return "";
+  return `${source}:${id}`;
+}
 
 // ---------------- 基础解析 ----------------
 
@@ -283,12 +383,22 @@ const FETCHERS = { tx: fetchTx, kg: fetchKg, wy: fetchWy, kw: fetchKw };
 async function fetchLyric(source, musicInfo, manager) {
   const info = musicInfo || {};
 
+  // 0) 先看缓存：歌词内容基本不变，命中就不必再请求平台（酷狗还要走两步）
+  const cacheKey = _lyricCacheKey(source, info);
+  const hit = _readCache(cacheKey);
+  if (hit && Array.isArray(hit.lines) && hit.lines.length) {
+    return { lines: hit.lines, origin: "cache" };
+  }
+
   // 1) 优先：源自己声明了该平台的 lyric 能力（洛雪契约里仅 local 源，第三方源可能扩展）
   if (manager && typeof manager.callEnabled === "function") {
     try {
       const { result } = await manager.callEnabled(source, "lyric", { musicInfo: info });
       const lines = buildLines(result || {});
-      if (lines.length) return { lines, origin: "source" };
+      if (lines.length) {
+        _writeCache(cacheKey, { lines });
+        return { lines, origin: "source" };
+      }
     } catch {
       /* 源不支持 lyric → 落平台接口 */
     }
@@ -300,11 +410,14 @@ async function fetchLyric(source, musicInfo, manager) {
   const raw = await fetcher(info);
   const lines = buildLines(raw);
   if (!lines.length) throw new Error("该歌曲暂无歌词");
+  _writeCache(cacheKey, { lines });
   return { lines, origin: "platform" };
 }
 
 module.exports = {
   fetchLyric,
+  setCacheDir,
+  setCacheEnabled,
   // 以下导出供离线自检使用
   parseLrc,
   parseLxLyric,

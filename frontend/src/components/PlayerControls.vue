@@ -87,6 +87,31 @@
       <button class="pc-btn pc-btn--mode" :title="t('player.mode', { m: player.modeLabel })" :aria-label="t('player.mode', { m: player.modeLabel })" @click="player.toggleMode()">
         <AppIcon :name="modeIcon" :size="18" />
       </button>
+      <!-- 在线歌曲：显示实际命中的音质（音质降级后的结果），点开可切换 -->
+      <div v-if="isOnline" class="pc-quality">
+        <button
+          class="pc-btn pc-btn--quality"
+          :class="{ 'pc-btn--active': qualityOpen }"
+          :title="t('online.quality')"
+          :aria-label="t('online.quality')"
+          :aria-haspopup="true"
+          :aria-expanded="qualityOpen"
+          @click="qualityOpen = !qualityOpen"
+        >
+          {{ player.onlineLoading ? "…" : qualityText(player.onlineQuality) }}
+        </button>
+        <div v-if="qualityOpen" class="pc-quality__menu">
+          <button
+            v-for="q in qualityOptions"
+            :key="q"
+            class="pc-quality__opt"
+            :class="{ 'pc-quality__opt--on': q === (player.currentSong?.quality || '') }"
+            @click="chooseQuality(q)"
+          >
+            {{ qualityText(q) }}
+          </button>
+        </div>
+      </div>
       <div class="pc-speed">
         <button
           class="pc-btn pc-btn--speed"
@@ -127,15 +152,31 @@ import SleepTimerPanel from "./SleepTimerPanel.vue";
 import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
+import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
 import { useI18n } from "@/utils/i18n";
+import { isOnlineSong, qualityLabel as qualityText } from "@/utils/onlineSong";
 
 const player = usePlayerStore();
 const config = useConfigStore();
+const online = useOnlineLibrary();
 const { t } = useI18n();
 
 const showFx = ref(false);
 const showQueue = ref(false);
 const showSleep = ref(false);
+
+// ---- 在线歌曲音质 ----
+const isOnline = computed(() => isOnlineSong(player.currentSong));
+// 选项 = 该平台源声明的音质 + 一个「自动」（交给降级链挑最高可用）
+const qualityOptions = computed(() =>
+  isOnline.value ? ["", ...online.qualitiesFor(player.currentSong?.source)] : []
+);
+const qualityOpen = ref(false);
+
+async function chooseQuality(q) {
+  qualityOpen.value = false;
+  if (player.currentSong) await online.setQuality(player.currentSong, q);
+}
 
 // 点击面板外部关闭音效 / 队列 / 睡眠定时 / 倍速面板
 function onDocClick(e) {
@@ -150,6 +191,9 @@ function onDocClick(e) {
   }
   if (speedOpen.value && !e.target.closest(".pc-speed")) {
     speedOpen.value = false;
+  }
+  if (qualityOpen.value && !e.target.closest(".pc-quality")) {
+    qualityOpen.value = false;
   }
 }
 
@@ -298,6 +342,7 @@ onBeforeUnmount(() => {
 .pc-queue,
 .pc-sleep,
 .pc-fx,
+.pc-quality,
 .pc-speed {
   position: relative;
   display: inline-flex;
@@ -305,11 +350,56 @@ onBeforeUnmount(() => {
 .pc-queue__pop,
 .pc-sleep__pop,
 .pc-fx__pop,
+.pc-quality__menu,
 .pc-speed__menu {
   position: absolute;
   right: 0;
   bottom: calc(100% + 10px);
   z-index: 600;
+}
+
+/* ---- 在线歌曲音质 ---- */
+.pc-btn--quality {
+  width: auto;
+  min-width: 44px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.02em;
+  color: var(--teyvat-gold);
+  border: 1px solid color-mix(in srgb, var(--teyvat-gold) 40%, transparent);
+  border-radius: var(--radius-full);
+}
+.pc-quality__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--teyvat-card-border);
+  background: color-mix(in srgb, var(--teyvat-card-bg) 24%, var(--teyvat-bg-dark) 76%);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: blur(var(--blur-overlay));
+}
+.pc-quality__opt {
+  min-width: 84px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--teyvat-text-primary);
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.pc-quality__opt:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--teyvat-gold);
+}
+.pc-quality__opt--on {
+  color: var(--teyvat-gold);
+  background: color-mix(in srgb, var(--teyvat-gold) 16%, transparent);
 }
 
 .pc-speed__menu {

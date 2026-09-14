@@ -62,7 +62,10 @@
         @contextmenu.prevent="openMenu($event, song)"
       >
         <span class="col-idx">{{ i + 1 }}</span>
-        <span class="col-title" :title="song.title">{{ song.title }}</span>
+        <span class="col-title" :title="song.title">
+          {{ song.title }}
+          <span v-if="online.isDownloaded(song)" class="tag-done">{{ t("online.downloadedBadge") }}</span>
+        </span>
         <span :title="song.artist || t('online.unknownArtist')">
           {{ song.artist || t("online.unknownArtist") }}
         </span>
@@ -91,6 +94,24 @@
           >
             <AppIcon name="add-to" :size="13" />
           </button>
+          <button
+            class="op-btn"
+            :title="t('ctx.favorite')"
+            :aria-label="t('ctx.favorite')"
+            @click.stop="online.toggleFavorite(song)"
+          >
+            <AppIcon name="heart-outline" :size="13" />
+          </button>
+          <button
+            class="op-btn"
+            :class="{ 'op-btn--on': online.isDownloaded(song) }"
+            :title="online.isDownloaded(song) ? t('online.downloaded') : t('online.download')"
+            :aria-label="t('online.download')"
+            :disabled="online.isDownloaded(song)"
+            @click.stop="downloadSong(song)"
+          >
+            <AppIcon name="download" :size="13" />
+          </button>
         </span>
       </div>
     </div>
@@ -103,11 +124,26 @@
       :y="ctx.y"
       :song="ctx.song"
       :playing="player.currentSong?.id === ctx.song?.id"
+      :fav="!!ctx.song?.favorite"
+      :qualities="ctx.song ? online.qualitiesFor(ctx.song.source) : []"
+      :quality="ctx.song?.quality || ''"
+      :downloaded="ctx.song ? online.isDownloaded(ctx.song) : false"
+      :download-percent="ctxPercent"
       online
       @close="ctx.visible = false"
       @play="playCtx"
       @play-next="playNextCtx"
       @add-queue="addQueueCtx"
+      @toggle-fav="favCtx"
+      @add-playlist="addPlaylistCtx"
+      @set-quality="setQualityCtx"
+      @download="downloadCtx"
+    />
+
+    <PlaylistPickerModal
+      :visible="picker.visible"
+      :song="picker.song"
+      @close="picker.visible = false"
     />
   </GlassCard>
 </template>
@@ -116,8 +152,10 @@
 import { ref, computed, onMounted, watch } from "vue";
 import GlassCard from "./GlassCard.vue";
 import SongContextMenu from "./SongContextMenu.vue";
+import PlaylistPickerModal from "./PlaylistPickerModal.vue";
 import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
+import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
 import { useI18n } from "@/utils/i18n";
 import { toast, toastError } from "@/utils/toast";
 import { toPlain } from "@/utils/bridge";
@@ -130,6 +168,7 @@ const PLATFORMS = [
 ];
 
 const player = usePlayerStore();
+const online = useOnlineLibrary();
 const { t } = useI18n();
 
 const keyword = ref("");
@@ -250,8 +289,20 @@ function addQueue(song) {
   if (song) player.addToQueue(song);
 }
 
+/** 下载到本地曲库：按当前选中的音质（未选则由降级链挑最高可用） */
+function downloadSong(song, quality) {
+  if (!song) return;
+  online.download(song, quality ?? song.quality ?? "");
+}
+
 // ---- 右键菜单 ----
 const ctx = ref({ visible: false, x: 0, y: 0, song: null });
+const picker = ref({ visible: false, song: null });
+
+const ctxPercent = computed(() => {
+  const p = ctx.value.song ? online.progressOf(ctx.value.song) : null;
+  return p && !p.done && p.percent != null ? p.percent : null;
+});
 
 function openMenu(e, song) {
   ctx.value = { visible: true, x: e.clientX, y: e.clientY, song };
@@ -275,6 +326,29 @@ function addQueueCtx() {
   ctx.value.visible = false;
 }
 
+async function favCtx() {
+  const s = ctx.value.song;
+  ctx.value.visible = false;
+  if (s) await online.toggleFavorite(s);
+}
+
+function addPlaylistCtx() {
+  picker.value = { visible: true, song: ctx.value.song };
+  ctx.value.visible = false;
+}
+
+async function setQualityCtx(q) {
+  const s = ctx.value.song;
+  ctx.value.visible = false;
+  if (s) await online.setQuality(s, q);
+}
+
+function downloadCtx() {
+  const s = ctx.value.song;
+  ctx.value.visible = false;
+  if (s) downloadSong(s, s.quality);
+}
+
 function formatDuration(sec) {
   if (!sec) return "--:--";
   const m = Math.floor(sec / 60);
@@ -282,7 +356,9 @@ function formatDuration(sec) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-onMounted(loadPlatforms);
+onMounted(async () => {
+  await Promise.all([loadPlatforms(), online.loadMeta(true), online.loadDownloaded()]);
+});
 
 // 播放失败后刷新失败提示：让「这个平台你的源播不了」立刻反映到筛选条上，
 // 而不是等用户再搜一次才发现。
@@ -388,7 +464,7 @@ watch(
 
 .row-grid {
   display: grid;
-  grid-template-columns: 36px 1.5fr 1fr 1fr 72px 56px 88px;
+  grid-template-columns: 36px 1.5fr 1fr 1fr 72px 56px 148px;
   align-items: center;
   gap: var(--space-3);
   padding: 0 var(--space-4);
@@ -433,6 +509,11 @@ watch(
 .col-idx {
   color: var(--teyvat-text-secondary);
 }
+.col-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .col-duration {
   text-align: right;
   color: var(--teyvat-text-secondary);
@@ -448,6 +529,16 @@ watch(
   background: color-mix(in srgb, var(--teyvat-blue) 22%, transparent);
   color: var(--teyvat-text-primary);
   border: 1px solid color-mix(in srgb, var(--teyvat-blue) 40%, transparent);
+}
+/* 「已下载」标记：避免用户对同一首反复点下载 */
+.tag-done {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--teyvat-gold) 18%, transparent);
+  color: var(--teyvat-gold);
+  border: 1px solid color-mix(in srgb, var(--teyvat-gold) 40%, transparent);
 }
 .col-ops {
   display: flex;
@@ -474,9 +565,16 @@ watch(
   cursor: pointer;
   transition: background var(--t-fast), color var(--t-fast);
 }
-.op-btn:hover {
+.op-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--teyvat-gold) 16%, transparent);
   color: var(--teyvat-gold);
+}
+.op-btn:disabled {
+  cursor: default;
+}
+.op-btn--on {
+  color: var(--teyvat-gold);
+  opacity: 0.7;
 }
 .online-view__empty {
   text-align: center;

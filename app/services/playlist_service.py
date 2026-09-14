@@ -6,11 +6,10 @@ from typing import Optional
 
 from app.models import database as db
 
-SONG_JOIN_COLS = (
-    "s.id, s.path, s.title, s.artist, s.album, s.duration, s.favorite, "
-    "s.sample_rate, s.bitrate, s.channels, s.format, "
-    "s.cover IS NOT NULL AS has_cover"
-)
+# 歌单内歌曲的返回列：**必须与 songs 表的列定义保持单一来源**（db.SONG_COLS_Q）。
+# 曾在这里手抄过一份列清单，结果在线歌曲入库新增 online_source 等列后漏掉了 ——
+# 歌单里的在线歌曲因此被前端当成「本地歌曲」去请求 /stream/<id>，直接播不出声。
+SONG_JOIN_COLS = db.SONG_COLS_Q
 
 
 def _playlist_summary(row: dict) -> dict:

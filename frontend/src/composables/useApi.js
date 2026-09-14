@@ -76,6 +76,30 @@ export function useApi() {
     return jpost("/api/online/cache/config", patch).then((res) => res?.data ?? null);
   }
 
+  // 在线歌曲入库（收藏 / 歌单 / 下载）
+  function registerOnlineSong(payload) {
+    return jpost("/api/online/register", payload).then((res) => res?.data ?? null);
+  }
+  function loadOnlineLibrary() {
+    return jget("/api/online/library");
+  }
+  function loadDownloadedKeys() {
+    return jget("/api/online/downloaded").then((res) => res?.data ?? []);
+  }
+  function setOnlineQuality(songId, quality) {
+    return jput(`/api/online/songs/${songId}/quality`, { quality }).then((res) => res?.data ?? null);
+  }
+  function removeOnlineSong(songId) {
+    return jdel(`/api/online/songs/${songId}`).then((res) => res?.data ?? null);
+  }
+  /** 下载：url 由主进程按选定音质解析好后传入，后端只负责取流落盘并登记 */
+  function downloadOnlineSong(payload) {
+    return jpost("/api/online/download", payload);
+  }
+  function getDownloadProgress(key) {
+    return jget(`/api/online/download/progress?key=${encodeURIComponent(key)}`).then((res) => res?.data ?? null);
+  }
+
   // 歌单
   function loadPlaylists() {
     return jget("/api/playlists");
@@ -88,6 +112,9 @@ export function useApi() {
   }
   function getPlaylistSongs(id) {
     return jget(`/api/playlists/${id}/songs`);
+  }
+  function addPlaylistSong(id, songId) {
+    return jpost(`/api/playlists/${id}/songs`, { song_id: songId });
   }
   function exportPlaylist(id) {
     return jget(`/api/playlists/${id}/export`);
@@ -112,10 +139,18 @@ export function useApi() {
     getOnlineCache,
     clearOnlineCache,
     setOnlineCacheConfig,
+    registerOnlineSong,
+    loadOnlineLibrary,
+    loadDownloadedKeys,
+    setOnlineQuality,
+    removeOnlineSong,
+    downloadOnlineSong,
+    getDownloadProgress,
     loadPlaylists,
     createPlaylist,
     deletePlaylist,
     getPlaylistSongs,
+    addPlaylistSong,
     exportPlaylist,
     importPlaylist,
   };

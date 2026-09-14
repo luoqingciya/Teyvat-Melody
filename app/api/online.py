@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
-"""在线音频代理：GET /api/online/proxy?url=<encoded>&source=<平台key>。
+"""在线音频代理与在线歌曲入库。
 
-第三方源脚本解析出的音频 URL 普遍带防盗链（校验 Referer / User-Agent）且时效很短，
-渲染进程既跨域、又无法伪装 Referer，因此统一经本机 Flask 同源转发：
+两个职责：
 
-- **透传 Range / If-Range**，原样回传 206 与 Content-Range —— <audio> 才能拖动进度条 seek；
-- **按平台注入 Referer / User-Agent**，绕过平台防盗链；
-- **纯流式转发，不落盘、不缓存**（URL 时效短，缓存无意义且占空间）；
-- 仅放行 http/https，避免被源脚本用作任意协议跳板。
+1. **同源代理**（`/proxy`、`/image`）—— 第三方源脚本解析出的音频 URL 普遍带防盗链
+   （校验 Referer / User-Agent）且时效很短，渲染进程既跨域、又无法伪装 Referer，
+   因此统一经本机 Flask 同源转发：
 
-媒体仍由同源提供，故 server.py 的 CSP `media-src 'self'` 无需放宽。
+   - **透传 Range / If-Range**，原样回传 206 与 Content-Range —— <audio> 才能拖动进度条 seek；
+   - **按平台注入 Referer / User-Agent**，绕过平台防盗链；
+   - 音频字节按**稳定键**落盘缓存（CDN 地址每次播放都变，拿它当缓存键永远命不中）；
+   - 仅放行 http/https，避免被源脚本用作任意协议跳板。
+
+   媒体仍由同源提供，故 server.py 的 CSP `media-src 'self'` 无需放宽。
+
+2. **在线歌曲入库**（`/register`、`/library`、`/download`）—— 让在线歌曲也能被收藏、
+   加进歌单、写进播放历史与统计：这些机制都挂在 `songs.id` 上，所以在 songs 表里
+   占一行即可全部复用（见 library_service 的「在线歌曲入库」一节）。
+   下载则把音频真正取回本地 music/ 目录并登记为**本地歌曲**，此后与扫描入库的歌完全等价。
 """
 import re
 import threading
@@ -18,7 +26,8 @@ import urllib.request
 
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
-from app.services import online_cache
+from app.services import library_service, metadata_parser, online_cache
+from app.utils import paths
 
 bp = Blueprint("online", __name__)
 
@@ -358,3 +367,264 @@ def image():
     resp = Response(data, status=200, content_type=ctype)
     resp.headers["Cache-Control"] = "public, max-age=3600"
     return resp
+
+
+# ---------------- 在线歌曲入库（收藏 / 歌单 / 下载） ----------------
+# 收藏与歌单都挂在 songs.id 上，所以「让在线歌曲可收藏、可入歌单」的最小代价
+# 就是在 songs 表里给它占一行（online_source 非空），此后所有既有机制零改动复用。
+
+
+def _payload() -> dict:
+    """统一取请求体（兼容 GET 之外的 JSON 提交）。"""
+    return request.get_json(silent=True) or {}
+
+
+@bp.post("/register")
+def register_song():
+    """把一首在线歌曲登记进曲库（幂等），返回其 song_id。
+
+    前端在「收藏 / 加入歌单 / 记录播放」之前先调这里拿到本地 id。
+    """
+    data = _payload()
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    song = library_service.upsert_online_song(
+        data.get("source"),
+        data.get("platformId"),
+        title=str(data.get("title") or meta.get("title") or meta.get("name") or "").strip(),
+        artist=str(data.get("artist") or meta.get("artist") or meta.get("singer") or "").strip(),
+        album=str(data.get("album") or meta.get("album") or "").strip(),
+        duration=data.get("duration") or meta.get("duration") or meta.get("interval") or 0,
+        cover_url=str(data.get("coverUrl") or meta.get("coverUrl") or meta.get("picUrl") or "").strip(),
+        quality=str(data.get("quality") or "").strip(),
+        # 完整 musicInfo 一并入库：下次从收藏/歌单播放时源脚本仍需这些字段
+        meta=meta,
+    )
+    if song is None:
+        return _err("source and platformId are required", 400)
+    return jsonify({"code": 200, "message": "success", "data": song})
+
+
+@bp.get("/library")
+def online_library():
+    """已入库的在线歌曲列表（`?favorite=1` 只看收藏）。"""
+    favorite_only = request.args.get("favorite") in ("1", "true", "yes")
+    return jsonify({
+        "code": 200,
+        "message": "success",
+        "data": library_service.list_online_songs(favorite_only=favorite_only),
+    })
+
+
+@bp.get("/downloaded")
+def downloaded():
+    """已下载入库的在线歌曲键列表（供搜索页标注「已下载」）。"""
+    return jsonify({"code": 200, "message": "success", "data": library_service.downloaded_keys()})
+
+
+@bp.delete("/songs/<int:song_id>")
+def remove_song(song_id: int):
+    """把在线歌曲移出曲库（收藏与歌单归属一并清除）。"""
+    if not library_service.remove_online_song(song_id):
+        return _err("not an online song", 404)
+    return jsonify({"code": 200, "message": "success", "data": {"id": song_id, "removed": True}})
+
+
+@bp.put("/songs/<int:song_id>/quality")
+def set_song_quality(song_id: int):
+    """记住该在线歌曲的首选音质（播放与下载都优先用它）。"""
+    song = library_service.set_online_quality(song_id, str(_payload().get("quality") or ""))
+    if song is None:
+        return _err("not an online song", 404)
+    return jsonify({"code": 200, "message": "success", "data": song})
+
+
+# ---- 下载：把在线音频真正取回本地 music/ 并登记为本地歌曲 ----
+# 进度放在内存里，前端每 500ms 轮询一次 —— 无损音频动辄 50MB，
+# 没有进度反馈的话用户会以为卡死了。
+_downloads: dict[str, dict] = {}
+_dl_lock = threading.Lock()
+
+
+def _dl_patch(key: str, patch: dict) -> None:
+    if not key:
+        return
+    with _dl_lock:
+        cur = _downloads.setdefault(key, {})
+        cur.update(patch)
+
+
+def _safe_filename(s: str, fallback: str = "在线歌曲") -> str:
+    """把「歌手 - 歌名」清洗成合法文件名（Windows 禁用字符 + 长度上限）。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", str(s or "")).strip().strip(".")
+    return cleaned[:120] or fallback
+
+
+def _unique_dest(directory, stem: str, ext: str):
+    directory.mkdir(parents=True, exist_ok=True)
+    dest = directory / f"{stem}{ext}"
+    n = 1
+    while dest.exists():
+        dest = directory / f"{stem} ({n}){ext}"
+        n += 1
+    return dest
+
+
+def _fetch_cover(source: str, url: str) -> bytes:
+    """取回封面字节（失败返回 b""）—— 用于嵌入文件 + 存进数据库。"""
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return b""
+    try:
+        req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
+        upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+        try:
+            ctype = str(upstream.headers.get("Content-Type") or "")
+            if not ctype.lower().startswith("image/"):
+                return b""
+            data = upstream.read(_IMAGE_MAX + 1)
+        finally:
+            upstream.close()
+        return data if len(data) <= _IMAGE_MAX else b""
+    except Exception:  # noqa: BLE001  封面取不到不影响下载本身
+        return b""
+
+
+@bp.post("/download")
+def download():
+    """按指定音质把在线歌曲下载到本地 music/ 目录，并登记为**本地歌曲**。
+
+    请求体：`{url, source, key, quality, meta:{title,artist,album,duration,coverUrl}, lyrics}`
+    其中 `url` 由主进程按用户选择的音质解析好（含降级与换源），这里只负责取流落盘。
+    下载完成的歌与扫描入库的歌完全等价：可离线播放、可编辑标签、封面与歌词都已就位。
+    """
+    data = _payload()
+    url = str(data.get("url") or "").strip()
+    source = str(data.get("source") or "").strip().lower()
+    key = str(data.get("key") or "").strip()
+    quality = str(data.get("quality") or "").strip()
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    lyrics = data.get("lyrics")
+
+    if not url:
+        return _err("url required", 400)
+    if not url.lower().startswith(("http://", "https://")):
+        return _err("only http/https url allowed", 400)
+
+    title = str(meta.get("title") or "").strip()
+    artist = str(meta.get("artist") or "").strip()
+    stem = _safe_filename(f"{artist} - {title}" if artist else title)
+    music = paths.music_dir()
+    _dl_patch(key, {"received": 0, "total": 0, "done": False, "error": None, "name": stem})
+
+    try:
+        # 1) 播放缓存命中 → 直接复制，秒完成（同一首刚播过时最常见）
+        cached = online_cache.cached_path(key) if key else None
+        if cached is not None:
+            ext = cached.suffix or ".mp3"
+            dest = _unique_dest(music, stem, ext)
+            with open(cached, "rb") as src_fh, open(dest, "wb") as dst_fh:
+                while True:
+                    chunk = src_fh.read(_CHUNK)
+                    if not chunk:
+                        break
+                    dst_fh.write(chunk)
+            _dl_patch(key, {"received": dest.stat().st_size, "total": dest.stat().st_size})
+        else:
+            req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
+            upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+            try:
+                content_type = str(upstream.headers.get("Content-Type") or "")
+                dest = _unique_dest(music, stem, online_cache.ext_for(content_type))
+                total = _total_bytes(upstream.headers)
+                _dl_patch(key, {"total": total})
+                received = 0
+                with open(dest, "wb") as fh:
+                    while True:
+                        chunk = upstream.read(_CHUNK)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        received += len(chunk)
+                        _dl_patch(key, {"received": received})
+            finally:
+                try:
+                    upstream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if not dest.is_file() or dest.stat().st_size <= 0:
+            raise RuntimeError("下载内容为空")
+
+        # 2) 补齐封面 / 歌词 / 标签，让下载回来的文件在本地曲库里是完整的
+        cover = _fetch_cover(source, str(meta.get("coverUrl") or ""))
+        lrc_text = lyrics if isinstance(lyrics, str) and lyrics.strip() else None
+        if lrc_text:
+            try:
+                dest.with_suffix(".lrc").write_text(lrc_text, encoding="utf-8")
+            except OSError:
+                pass
+        # 标签写回文件（best-effort）：让文件离开本应用后也带着正确的歌名歌手
+        metadata_parser.write_tags(dest, title, artist, str(meta.get("album") or ""))
+        if cover:
+            metadata_parser.write_cover(dest, cover)
+
+        song = library_service.register_file(
+            dest,
+            {
+                "title": title or dest.stem,
+                "artist": artist,
+                "album": str(meta.get("album") or ""),
+                "duration": meta.get("duration") or 0,
+                "cover": cover or None,
+                "lyrics": lrc_text,
+                # 记下在线来源：既便于日后追溯，也让搜索页能标「已下载」
+                "source_path": library_service.online_path(source, str(data.get("platformId") or "")),
+            },
+        )
+        if song is None:
+            raise RuntimeError("登记入库失败")
+
+        # 3) 把首选音质记到在线记录上（下次播放 / 再次下载直接用它）
+        if data.get("songId") is not None:
+            try:
+                library_service.set_online_quality(int(data["songId"]), quality)
+            except (TypeError, ValueError):
+                pass
+
+        _dl_patch(key, {"done": True, "song": song, "path": str(dest)})
+        return jsonify({"code": 200, "message": "success", "data": song})
+    except urllib.error.HTTPError as exc:
+        try:
+            exc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _dl_patch(key, {"error": f"上游 {exc.code}", "done": True})
+        return _err(f"upstream {exc.code}", exc.code)
+    except Exception as exc:  # noqa: BLE001
+        _dl_patch(key, {"error": str(exc), "done": True})
+        return _err(f"download failed: {exc}", 500)
+
+
+@bp.get("/download/progress")
+def download_progress():
+    """下载进度（前端轮询）：`?key=<稳定键>`。"""
+    key = (request.args.get("key") or "").strip()
+    with _dl_lock:
+        cur = dict(_downloads.get(key) or {})
+    if not cur:
+        return jsonify({"code": 200, "message": "success", "data": None})
+    total = int(cur.get("total") or 0)
+    received = int(cur.get("received") or 0)
+    percent = int(received * 100 / total) if total > 0 else 0
+    return jsonify({
+        "code": 200,
+        "message": "success",
+        "data": {
+            "name": cur.get("name") or "",
+            "received": received,
+            "total": total,
+            "percent": min(100, percent),
+            "done": bool(cur.get("done")),
+            "error": cur.get("error"),
+            "song": cur.get("song"),
+        },
+    })

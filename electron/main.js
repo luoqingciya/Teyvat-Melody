@@ -709,6 +709,8 @@ ipcMain.handle("hotkeys:apply", (_e, { enabled }) => {
 // ---------------- 自定义源（洛雪源脚本宿主） ----------------
 // sources/ 目录与 sources.json 都在软件根目录（dataRoot），符合根目录存储约定。
 const sourceManager = new SourceManager(dataRoot());
+// 歌词缓存与音频缓存同放软件根目录 cache/ 下（设置页「清空缓存」会一并清掉）
+onlineLyric.setCacheDir(path.join(dataRoot(), "cache", "lyrics"));
 
 ipcMain.handle("source:list", () => ({ ok: true, list: sourceManager.list() }));
 
@@ -770,8 +772,22 @@ ipcMain.handle("online:platforms", () => {
 
 // 在线歌曲歌词：优先用源声明的 lyric 能力，否则走平台歌词接口。
 // 主进程解析成 lines（翻译已内联进 text、逐字已展开为 words），渲染进程零解析。
+//
+// 歌词缓存开关与音频缓存共用同一份配置（cache/config.json 由 Flask 端读写），
+// 这里在每次取歌词前读一次 —— 文件只有几百字节，且只在切歌时发生，代价可忽略；
+// 好处是用户在设置页关掉缓存后，下一次切歌就立刻不再写盘。
+function onlineCacheEnabled() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(dataRoot(), "cache", "config.json"), "utf8"));
+    return raw.enabled !== false;
+  } catch {
+    return true; // 配置不存在 / 损坏 → 默认开启（与后端默认值一致）
+  }
+}
+
 ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
   try {
+    onlineLyric.setCacheEnabled(onlineCacheEnabled());
     const r = await onlineLyric.fetchLyric(source, musicInfo || {}, sourceManager);
     return { ok: true, ...r };
   } catch (e) {

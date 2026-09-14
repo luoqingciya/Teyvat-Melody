@@ -6,6 +6,10 @@ let host = null;
 function ensureHost() {
   if (host && document.body.contains(host)) return host;
   host = document.createElement("div");
+  // 类名给自动化测试与样式覆盖留个抓手：宿主是裸 div + 内联样式，
+  // 没有类名时外部（如 tools/ui-e2e.js）无法定位提示内容 —— 曾因此让
+  // 「播放失败要报错」这类断言一直读到空字符串，等于没测。
+  host.className = "tm-toast-host";
   Object.assign(host.style, {
     position: "fixed",
     left: "50%",
@@ -33,6 +37,8 @@ export function toast(message, { type = "info", duration = 3200, action = null }
   if (!message) return () => {};
   const isErr = type === "error";
   const el = document.createElement("div");
+  // 带上类型标记：自动化测试据此区分「提示」与「报错」（见 ensureHost 的说明）
+  el.className = isErr ? "tm-toast tm-toast--error" : "tm-toast";
   Object.assign(el.style, {
     maxWidth: "440px",
     padding: "10px 16px",

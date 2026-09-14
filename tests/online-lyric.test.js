@@ -3,6 +3,9 @@
 // 覆盖 LRC / LX 逐字 / 酷狗 KRC（含解密往返）/ 翻译合并 / 组装优先级。
 // 全部离线（固定样本），线上接口的连通性由 electron/__test-e2e.js 覆盖。
 const zlib = require("zlib");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   parseLrc,
   parseLxLyric,
@@ -13,6 +16,8 @@ const {
   toLxLyric,
   decodeEntities,
   fetchLyric,
+  setCacheDir,
+  setCacheEnabled,
   KRC_KEY,
 } = require("../electron/onlineLyric");
 
@@ -113,6 +118,87 @@ const ok = (name, cond, extra) => {
       err = e;
     }
     ok("fetchLyric：源失败且平台不支持时给出明确错误", !!err && /暂不支持 nope/.test(err.message), err && err.message);
+
+    // ---- 歌词缓存 ----
+    // 用「源自己提供歌词」的路径写缓存：不碰平台接口，测试全程离线。
+    // 平台 key 故意用不存在的 "nope" —— 一旦缓存未命中就会抛「暂不支持 nope」，
+    // 于是「没抛错」本身就是命中缓存的证据（不需要联网也能验证）。
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tm-lyric-"));
+    setCacheDir(tmpDir);
+    setCacheEnabled(true);
+    const listCache = () => fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
+    const SOURCE = "nope";
+    const INFO = { rid: "M123" };
+    const okManager = { callEnabled: async () => ({ result: { lyric: "[00:01.00]来自源" } }) };
+    const deadManager = { callEnabled: async () => ({ result: {} }) }; // 源不给歌词 → 落平台接口 → 该平台不存在
+
+    const first = await fetchLyric(SOURCE, INFO, okManager);
+    ok("歌词缓存：首次取歌词后落盘", first.origin === "source" && listCache().length === 1, JSON.stringify(first));
+
+    const second = await fetchLyric(SOURCE, INFO, deadManager);
+    ok(
+      "歌词缓存：二次命中缓存，不再请求源/平台",
+      second.origin === "cache" && second.lines.length === 1 && second.lines[0].text === "来自源",
+      JSON.stringify(second)
+    );
+
+    // 缓存键与音质无关：同一首歌换音质不该重新拉歌词
+    const byHashAlias = await fetchLyric(SOURCE, { hash: "M123" }, deadManager);
+    ok("歌词缓存：仅凭别名 id 也能命中同一份缓存", byHashAlias.origin === "cache", JSON.stringify(byHashAlias));
+
+    const otherSong = { rid: "M999" };
+    let missErr = null;
+    try {
+      await fetchLyric(SOURCE, otherSong, deadManager);
+    } catch (e) {
+      missErr = e;
+    }
+    ok("歌词缓存：不同歌曲不串缓存", !!missErr && /暂不支持 nope/.test(missErr.message), missErr && missErr.message);
+
+    // 逐字信息（words）经 JSON 往返后必须完整保留，否则桌面歌词会退化成按行插值
+    setCacheEnabled(false);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.mkdirSync(tmpDir, { recursive: true });
+    setCacheEnabled(true);
+    const wordManager = {
+      callEnabled: async () => ({ result: { lxlyric: "[00:01.000]<0,500>逐<500,500>字" } }),
+    };
+    await fetchLyric(SOURCE, INFO, wordManager);
+    const wordsBack = await fetchLyric(SOURCE, INFO, deadManager);
+    ok(
+      "歌词缓存：逐字时间轴完整往返",
+      wordsBack.origin === "cache" && wordsBack.lines[0].words?.length === 2 && wordsBack.lines[0].words[1].t === 1.5,
+      JSON.stringify(wordsBack)
+    );
+
+    // 过期（超过 TTL）视为未命中，并且顺手把过期文件删掉
+    const staleFile = path.join(tmpDir, listCache()[0]);
+    const old = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    fs.utimesSync(staleFile, old, old);
+    let expiredErr = null;
+    try {
+      await fetchLyric(SOURCE, INFO, deadManager);
+    } catch (e) {
+      expiredErr = e;
+    }
+    ok("歌词缓存：超过 TTL 视为未命中", !!expiredErr, expiredErr && expiredErr.message);
+    ok("歌词缓存：过期文件被顺手清掉", !fs.existsSync(staleFile), "过期文件仍留在磁盘上");
+
+    // 缓存开关关闭后既不读也不写（与设置页的音频缓存共用同一个开关）
+    setCacheEnabled(false);
+    await fetchLyric(SOURCE, INFO, okManager);
+    ok("歌词缓存：关闭后不写盘", listCache().length === 0, JSON.stringify(listCache()));
+    let offErr = null;
+    try {
+      await fetchLyric(SOURCE, INFO, deadManager);
+    } catch (e) {
+      offErr = e;
+    }
+    ok("歌词缓存：关闭后不读缓存", !!offErr, offErr && offErr.message);
+    setCacheEnabled(true);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    setCacheDir(""); // 还原：避免影响后续断言（缓存目录是模块级状态）
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
     process.exitCode = 1;

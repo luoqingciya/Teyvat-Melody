@@ -14,64 +14,19 @@ import { useApi } from "@/composables/useApi";
 import { getProgress, saveProgress, clearProgress } from "@/utils/playbackProgress";
 import { saveLastQueue, loadLastQueue, clearLastQueue } from "@/utils/lastQueue";
 import { toastError } from "@/utils/toast";
-import { toPlain } from "@/utils/bridge";
-
-// ---------------- 在线歌曲（第三方源）辅助 ----------------
+import {
+  buildMusicInfo,
+  isOnlineSong,
+  onlineCacheKey,
+  proxyUrl,
+} from "@/utils/onlineSong";
 
 // 解析并发令牌：快速切歌时让先前的异步解析结果失效，避免旧结果覆盖新歌
 let onlineLoadToken = 0;
 // 歌词加载令牌：在线歌词要走网络，切歌更快时需丢弃过期结果
 let lyricToken = 0;
-
-/** 是否为在线歌曲 ID（形如 online:{平台}:{平台ID}） */
-function isOnlineId(id) {
-  return typeof id === "string" && id.startsWith("online:");
-}
-
-/** 是否为在线歌曲对象（显式 online 标记，或字符串 ID） */
-function isOnlineSong(song) {
-  return !!song && (song.online === true || isOnlineId(song.id));
-}
-
-/** 把在线歌曲展开成源脚本期望的 musicInfo：携带全量平台 ID，最大化兼容不同源脚本取值习惯。
- *  返回**普通值**（非 reactive）：跨 contextBridge 传给主进程前必须去代理，否则结构化克隆会拒绝。 */
-function buildMusicInfo(song) {
-  const info = song.meta && typeof song.meta === "object" ? { ...song.meta } : {};
-  const name = song.name ?? song.title;
-  const singer = song.singer ?? song.artist;
-  if (name) info.name = name;
-  if (singer) info.singer = singer;
-  if (song.album) info.album = song.album;
-  if (song.interval != null && info.interval == null) info.interval = song.interval;
-  // 平台 ID 别名互补：不同源脚本读的字段名不一样（实测独家音源读 kw 的 songmid、
-  // 读 kg 的 hash），而我们各平台搜索拿到的 ID 字段名也不统一。把已有的平台 ID
-  // 补全到所有常见字段名上，最大化兼容 —— 这正是「musicInfo 塞全平台 ID」的约定。
-  const ID_KEYS = ["songmid", "hash", "rid", "id", "mid", "FileHash"];
-  const firstId = ID_KEYS.map((k) => info[k]).find((v) => v != null && v !== "");
-  if (firstId != null) {
-    for (const k of ID_KEYS) {
-      if (info[k] == null || info[k] === "") info[k] = firstId;
-    }
-  }
-  return toPlain(info);
-}
-
-/** 在线歌曲的缓存键：平台 + 平台ID + 音质。
- *  **不能拿 CDN 地址当键** —— 它带时效签名、每次播放都不一样，永远命不中缓存；
- *  而同一首歌的音频字节是稳定的，所以用这个键。 */
-function onlineCacheKey(song, quality) {
-  const m = song?.meta && typeof song.meta === "object" ? song.meta : {};
-  const id = m.rid ?? m.songmid ?? m.hash ?? m.id ?? m.songId ?? m.mid ?? "";
-  if (!id) return "";
-  return `${song.source || ""}:${id}:${quality || ""}`;
-}
-
-/** 真实 CDN URL → 同源代理地址（Range 透传与 Referer 伪装由后端代理负责）。
- *  带上 key 后，后端会把音频缓存到本地，重播与 seek 都走本地文件。 */
-function proxyUrl(url, source, cacheKey) {
-  const k = cacheKey ? `&key=${encodeURIComponent(cacheKey)}` : "";
-  return `/api/online/proxy?url=${encodeURIComponent(url)}&source=${encodeURIComponent(source || "")}${k}`;
-}
+// 切换音质后要恢复到的播放位置（非响应式，避免进入 Pinia state）
+let pendingSeek = 0;
 
 // 睡眠定时非响应式计时器句柄（避免进入 Pinia state）
 let sleepTimerId = 0;
@@ -188,37 +143,38 @@ export const usePlayerStore = defineStore("player", {
       } else {
         this.currentSong = song;
         this.currentIndex = -1;
-        this._registerRecent(song.id);
-        this.loadLyrics(song.id);
+        this._registerRecent(song);
+        this.loadLyrics(song);
         this._play();
       }
     },
 
     /** 记录最近播放（仅在此集中处理，避免多处重复）。
-     *  在线歌曲不写最近播放：其字符串 ID 无法在本地曲库中还原（Phase 3 在线入库后再处理）。 */
-    _registerRecent(songId) {
-      if (songId == null || isOnlineId(songId)) return;
-      useConfigStore().pushRecent(songId);
+     *  在线歌曲一旦入库（收藏 / 加歌单）就有了本地行与整数 id，同样可以进最近播放；
+     *  只有搜索结果那种临时字符串 id 无法在曲库中还原，才跳过。 */
+    _registerRecent(song) {
+      const id = typeof song === "object" ? song?.id : song;
+      if (id == null || typeof id !== "number") return;
+      useConfigStore().pushRecent(id);
     },
 
     /** 拉取当前歌曲歌词（写入 store.lyrics，供主界面/全屏/桌面歌词共用）。
      *  本地歌曲走后端 /api/lyrics；在线歌曲由主进程从源或平台歌词接口取，
      *  翻译已内联进 text、逐字已展开为 words，前端零解析。 */
-    async loadLyrics(id) {
+    async loadLyrics(song) {
       this.lyrics = [];
-      if (id == null) return;
+      if (!song || song.id == null) return;
       const token = ++lyricToken;
       this.lyricLoading = true;
       try {
-        if (isOnlineId(id)) {
-          const song = this.currentSong;
+        if (isOnlineSong(song)) {
           const api = window.pywebview?.api;
-          if (!song || !api || typeof api.getOnlineLyric !== "function") return;
+          if (!api || typeof api.getOnlineLyric !== "function") return;
           const r = await api.getOnlineLyric(song.source, buildMusicInfo(song));
           if (token !== lyricToken) return; // 已切歌，丢弃过期结果
           this.lyrics = r?.lines ?? [];
         } else {
-          const res = await useApi().getLyrics(id);
+          const res = await useApi().getLyrics(song.id);
           if (token !== lyricToken) return;
           this.lyrics = res?.data?.lines ?? [];
         }
@@ -387,8 +343,8 @@ export const usePlayerStore = defineStore("player", {
       this.currentIndex = index;
       this.progress = 0;
       this.duration = 0;
-      this._registerRecent(song.id);
-      this.loadLyrics(song.id);
+      this._registerRecent(song);
+      this.loadLyrics(song);
       this._play();
       this._persistQueue();
     },
@@ -418,8 +374,9 @@ export const usePlayerStore = defineStore("player", {
       this._startPlayback(cfg, song);
     },
 
-    /** 在线歌曲播放：向主进程要真实 CDN URL（已含音质降级与换源重试），再走同源代理流。 */
-    async _playOnline(song, cfg) {
+    /** 在线歌曲播放：向主进程要真实 CDN URL（已含音质降级与换源重试），再走同源代理流。
+     *  `opts.autoplay=false` 用于「切换音质」：只换源不改变播放/暂停状态。 */
+    async _playOnline(song, cfg, opts = {}) {
       const token = ++onlineLoadToken;
       this.onlineQuality = "";
       try {
@@ -432,7 +389,9 @@ export const usePlayerStore = defineStore("player", {
         if (!r || !r.ok || !r.url) throw new Error(r?.message || "未获取到播放地址");
         this.onlineQuality = r.quality || "";
         getAudio().src = proxyUrl(r.url, song.source, onlineCacheKey(song, r.quality));
-        this._startPlayback(cfg, song);
+        this._startPlayback(cfg, song, opts);
+        // 已入库的在线歌曲（收藏 / 加歌单过）才有整数 id，可参与播放统计
+        if (typeof song.id === "number") useApi().recordPlay(song.id).catch(() => {});
       } catch (e) {
         if (token !== onlineLoadToken) return;
         this.isPlaying = false;
@@ -444,16 +403,43 @@ export const usePlayerStore = defineStore("player", {
       }
     },
 
-    /** 设置 audio.src 之后的统一起播动作（淡入淡出 + 启动续播进度恢复） */
-    _startPlayback(cfg, song) {
+    /**
+     * 切换当前在线歌曲的音质：重新解析地址，并从当前位置继续。
+     *
+     * 不改变播放/暂停状态 —— 用户只是换个音质，不该顺带把暂停中的歌放起来。
+     * 选中的音质写回歌曲对象，队列里后续播放会继续用它。
+     */
+    async switchOnlineQuality(quality) {
+      const song = this.currentSong;
+      if (!isOnlineSong(song)) return;
       const audio = getAudio();
+      const wasPlaying = this.isPlaying;
+      const at = Number(audio.currentTime) || 0;
+      song.quality = quality || "";
+      pendingSeek = at;
+      this.onlineLoading = true;
+      await this._playOnline(song, useConfigStore(), { autoplay: wasPlaying });
+      if (!wasPlaying) audio.pause();
+    },
+
+    /** 设置 audio.src 之后的统一起播动作（淡入淡出 + 启动续播进度恢复） */
+    _startPlayback(cfg, song, opts = {}) {
+      const audio = getAudio();
+      const autoplay = opts.autoplay !== false;
       // 切歌淡入淡出：先瞬间静音旧残响，播放新歌再平滑淡入（避免倍速/切歌爆音）
-      if (cfg.crossfade) {
+      if (autoplay && cfg.crossfade) {
         muteFade();
         audio.play().catch(() => {});
         fadeIn(cfg.crossfadeDuration || 0.6);
-      } else {
+      } else if (autoplay) {
         audio.play().catch(() => {});
+      }
+      // 切换音质：换源后回到原来的位置（在线歌曲重解析会换一条 URL，进度必须自己搬）
+      if (pendingSeek > 0) {
+        const target = pendingSeek;
+        pendingSeek = 0;
+        this._seekWhenReady(song, target);
+        return;
       }
       // 仅"启动续播"恢复该首历史进度（_pendingRestore 由启动流程置位并消费一次）；
       // 手动切歌 / 自动下一首 / 点选歌曲一律从头播放，避免从上次进度跳到中途
@@ -461,6 +447,19 @@ export const usePlayerStore = defineStore("player", {
         this._pendingRestore = false;
         this._restoreProgress(song.id);
       }
+    },
+
+    /** 音频元数据就绪后跳到指定位置（换源 / 恢复进度共用） */
+    _seekWhenReady(song, seconds) {
+      const audio = getAudio();
+      const doSeek = () => {
+        if (this.currentSong?.id !== song.id) return; // 快速切歌时别跳错歌
+        const dur = this.duration || audio.duration || 0;
+        const target = dur > 0 ? Math.min(seconds, Math.max(0, dur - 0.3)) : seconds;
+        if (target > 0) audio.currentTime = target;
+      };
+      if (audio.readyState >= 1) doSeek();
+      else audio.addEventListener("loadedmetadata", doSeek, { once: true });
     },
 
     /** 把当前歌曲进度持久化（节流到整秒；临近结尾不记，避免“播完还残留断点”） */
@@ -505,20 +504,9 @@ export const usePlayerStore = defineStore("player", {
     _restoreProgress(songId) {
       const saved = getProgress(songId);
       if (!saved || saved < 1) return;
-      const audio = getAudio();
-      const doSeek = () => {
-        // 快速切歌时防止把进度跳到错误的歌
-        if (this.currentSong?.id !== songId) return;
-        const dur = this.duration || audio.duration || 0;
-        // 预留 0.3s，避免 seek 到末尾直接触发 ended
-        const target = dur > 0 ? Math.min(saved, Math.max(0, dur - 0.3)) : saved;
-        if (target > 0) audio.currentTime = target;
-      };
-      if (audio.readyState >= 1) {
-        doSeek();
-      } else {
-        audio.addEventListener("loadedmetadata", doSeek, { once: true });
-      }
+      const song = this.currentSong;
+      if (!song || song.id !== songId) return;
+      this._seekWhenReady(song, saved);
     },
 
     /** 持久化「上次播放队列」快照（启动时可恢复队列与当前位置） */

@@ -1,6 +1,8 @@
 // playlistStore：歌单管理（后端 SQLite 持久化）。
+// 歌单里可能含在线歌曲（无本地文件），故加载后统一做形状还原。
 import { defineStore } from "pinia";
 import { useApi } from "@/composables/useApi";
+import { decorateSongs } from "@/utils/onlineSong";
 
 export const usePlaylistStore = defineStore("playlist", {
   state: () => ({
@@ -26,8 +28,15 @@ export const usePlaylistStore = defineStore("playlist", {
     },
     async loadSongs(id) {
       const res = await useApi().getPlaylistSongs(id);
-      this.currentSongs = res?.data ?? [];
+      this.currentSongs = decorateSongs(res?.data ?? []);
       return this.currentSongs;
+    },
+    /** 把歌曲加入歌单（在线歌曲需调用方先入库拿到整数 id） */
+    async addSong(playlistId, songId) {
+      const res = await useApi().addPlaylistSong(playlistId, songId);
+      const added = res?.data?.added ?? false;
+      await this.load();
+      return added;
     },
   },
 });

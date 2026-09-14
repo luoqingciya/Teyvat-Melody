@@ -8,8 +8,10 @@
 export function songCoverUrl(song) {
   if (!song) return "";
   if (song.online) {
-    if (!song.picUrl) return "";
-    return `/api/online/image?url=${encodeURIComponent(song.picUrl)}&source=${encodeURIComponent(song.source || "")}`;
+    // 搜索结果用 picUrl；入库后的行来自 cover_url（decorateSong 已统一到 picUrl，这里再兜一层）
+    const url = song.picUrl || song.cover_url || "";
+    if (!url) return "";
+    return `/api/online/image?url=${encodeURIComponent(url)}&source=${encodeURIComponent(song.source || "")}`;
   }
   return song.has_cover ? `/api/songs/${song.id}/cover` : "";
 }

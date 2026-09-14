@@ -19,10 +19,13 @@ def _default_data_dir():
 DATA_DIR = _default_data_dir()
 DB_PATH = DATA_DIR / "library.db"
 
-# 列表返回需要的列（不含 cover 大字段）
+# 列表返回需要的列（不含 cover 大字段）。
+# 后四列是「在线歌曲」标记：本地文件为空串，在线歌曲记录来源平台 / 平台 ID /
+# 首选音质 / 封面远程地址，前端据此把行还原成在线歌曲对象（见 frontend/src/utils/songShape.js）。
 SONG_COLS = (
     "id, path, title, artist, album, duration, favorite, "
     "sample_rate, bitrate, channels, format, "
+    "online_source, online_id, online_quality, cover_url, online_meta, "
     "cover IS NOT NULL AS has_cover"
 )
 
@@ -31,8 +34,14 @@ SONG_COLS = (
 SONG_COLS_Q = (
     "s.id, s.path, s.title, s.artist, s.album, s.duration, s.favorite, "
     "s.sample_rate, s.bitrate, s.channels, s.format, "
+    "s.online_source, s.online_id, s.online_quality, s.cover_url, s.online_meta, "
     "s.cover IS NOT NULL AS has_cover"
 )
+
+# 本地曲库过滤条件：在线歌曲记录（无本地文件）不应出现在「音乐库」列表里。
+# 它们由 /api/online/library 单独列出，但**共用收藏与歌单**（正是入库的目的）。
+LOCAL_ONLY = "online_source = ''"
+LOCAL_ONLY_Q = "s.online_source = ''"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS songs (
@@ -49,7 +58,12 @@ CREATE TABLE IF NOT EXISTS songs (
   bitrate     INTEGER NOT NULL DEFAULT 0,
   channels    INTEGER NOT NULL DEFAULT 0,
   format      TEXT    NOT NULL DEFAULT '',
-  source_path TEXT
+  source_path TEXT,
+  online_source  TEXT NOT NULL DEFAULT '',
+  online_id      TEXT,
+  online_quality TEXT,
+  cover_url      TEXT,
+  online_meta    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS playlists (
@@ -105,11 +119,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE songs ADD COLUMN channels INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE songs ADD COLUMN format TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE songs ADD COLUMN source_path TEXT",
+        # 在线歌曲入库（Phase 5）：本地文件为空串，在线歌曲记录来源与平台 ID
+        "ALTER TABLE songs ADD COLUMN online_source TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE songs ADD COLUMN online_id TEXT",
+        "ALTER TABLE songs ADD COLUMN online_quality TEXT",
+        "ALTER TABLE songs ADD COLUMN cover_url TEXT",
+        # 在线歌曲的完整 musicInfo（JSON）：源脚本要的字段各平台不同（kw 的 DC_TARGETID、
+        # kg 的 album_id、tx 的 media_mid…），只存一个 id 不足以在下次播放时还原请求。
+        "ALTER TABLE songs ADD COLUMN online_meta TEXT",
     ):
         try:
             conn.execute(ddl)
         except sqlite3.OperationalError:
             pass  # 列已存在
+    # 唯一索引在旧库上补建（新库同样由这里建 —— 不能放进 _SCHEMA，
+    # 因为旧库的 songs 表此刻还没有 online_source 列，executescript 会直接报错）。
+    # 作用：同一首在线歌被重复「收藏/入库」时命中同一行，收藏状态与歌单归属不会分裂。
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_online "
+            "ON songs(online_source, online_id) WHERE online_source <> ''"
+        )
+    except sqlite3.OperationalError:
+        pass
 
 
 def get_conn() -> sqlite3.Connection:

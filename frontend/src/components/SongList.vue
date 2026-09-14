@@ -47,6 +47,7 @@
           </button>
           <span class="col-idx">{{ startIndex + v + 1 }}</span>
           <span class="col-title" :title="song.title">
+            <span v-if="song.online" class="tag-online">{{ t("online.title") }}</span>
             <span class="col-title__text">
               {{ song.title }}
             </span>
@@ -68,13 +69,26 @@
       :song="ctx.song"
       :playing="player.currentSong?.id === ctx.song?.id"
       :fav="!!ctx.song?.favorite"
+      :online="!!ctx.song?.online"
+      :qualities="ctx.song?.online ? online.qualitiesFor(ctx.song.source) : []"
+      :quality="ctx.song?.quality || ''"
+      :downloaded="ctx.song?.online ? online.isDownloaded(ctx.song) : false"
+      :download-percent="ctxPercent"
       @close="ctx.visible = false"
       @play="playCtx"
       @play-next="playNextCtx"
       @add-queue="addQueueCtx"
       @toggle-fav="toggleFavCtx"
+      @add-playlist="addPlaylistCtx"
+      @set-quality="setQualityCtx"
+      @download="downloadCtx"
       @detail="openDetail"
       @edit="openEdit"
+    />
+    <PlaylistPickerModal
+      :visible="picker.visible"
+      :song="picker.song"
+      @close="picker.visible = false"
     />
     <SongDetailModal
       :visible="detailVisible"
@@ -99,11 +113,14 @@ import GlassCard from "./GlassCard.vue";
 import SongContextMenu from "./SongContextMenu.vue";
 import SongDetailModal from "./SongDetailModal.vue";
 import SongEditModal from "./SongEditModal.vue";
+import PlaylistPickerModal from "./PlaylistPickerModal.vue";
 import { useLibraryStore } from "@/stores/library";
 import { usePlaylistStore } from "@/stores/playlist";
 import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
+import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
 import { useI18n } from "@/utils/i18n";
+import { qualityLabel as qualityText } from "@/utils/onlineSong";
 
 const ROW_HEIGHT = 52; // 行高（px），与 CSS 保持一致
 const OVERSCAN = 6; // 上下额外渲染行数
@@ -113,6 +130,7 @@ const library = useLibraryStore();
 const playlist = usePlaylistStore();
 const player = usePlayerStore();
 const config = useConfigStore();
+const online = useOnlineLibrary();
 const { t } = useI18n();
 
 const keyword = ref("");
@@ -120,9 +138,10 @@ const scrollEl = ref(null);
 const scrollTop = ref(0);
 const viewHeight = ref(0);
 
-// 最近播放：按 config.recentSongs 中的 id 顺序从曲库中反查
+// 最近播放：按 config.recentSongs 中的 id 顺序反查。
+// 查找池用 allSongs（含已入库的在线歌曲）—— 在线歌曲入库后同样会进最近播放。
 const recentSongs = computed(() => {
-  const map = new Map(library.songList.map((s) => [s.id, s]));
+  const map = new Map(library.allSongs.map((s) => [s.id, s]));
   return config.recentSongs.map((id) => map.get(id)).filter(Boolean);
 });
 
@@ -260,11 +279,38 @@ function formatDuration(sec) {
 }
 
 function qualityLabel(song) {
+  // 在线歌曲没有本地编码信息，展示的是「首选音质」（源声明的标识）
+  if (song.online) return song.quality ? qualityText(song.quality) : t("online.colSource");
   const parts = [];
   if (song.format) parts.push(String(song.format).toUpperCase());
   if (song.bitrate) parts.push(`${Math.round(song.bitrate)}k`);
   if (song.sample_rate) parts.push(`${(song.sample_rate / 1000).toFixed(1)}kHz`);
   return parts.join(" · ") || "—";
+}
+
+// ---- 在线歌曲：加入歌单 / 换音质 / 下载 ----
+const picker = ref({ visible: false, song: null });
+
+const ctxPercent = computed(() => {
+  const p = ctx.value.song ? online.progressOf(ctx.value.song) : null;
+  return p && !p.done && p.percent != null ? p.percent : null;
+});
+
+function addPlaylistCtx() {
+  picker.value = { visible: true, song: ctx.value.song };
+  ctx.value.visible = false;
+}
+
+async function setQualityCtx(q) {
+  const s = ctx.value.song;
+  ctx.value.visible = false;
+  if (s) await online.setQuality(s, q);
+}
+
+function downloadCtx() {
+  const s = ctx.value.song;
+  ctx.value.visible = false;
+  if (s) online.download(s, s.quality);
 }
 
 // 歌单路由：进入时加载该歌单歌曲
@@ -283,6 +329,9 @@ onMounted(() => {
   // 歌单数据加载由上方 watch(immediate) 统一处理，避免进入 /playlist/:id 时重复请求
   nextTick(measure);
   window.addEventListener("resize", measure);
+  // 收藏 / 歌单里可能含在线歌曲：加载平台音质声明与「已下载」标记，供右键菜单使用
+  online.loadMeta();
+  online.loadDownloaded();
 });
 
 onBeforeUnmount(() => {
@@ -404,6 +453,16 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+}
+/* 在线歌曲标记：收藏 / 歌单 / 最近播放里混有在线条目时一眼可辨 */
+.tag-online {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--teyvat-blue) 22%, transparent);
+  color: var(--teyvat-text-primary);
+  border: 1px solid color-mix(in srgb, var(--teyvat-blue) 40%, transparent);
 }
 .col-title__text {
   overflow: hidden;

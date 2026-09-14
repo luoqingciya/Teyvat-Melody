@@ -32,6 +32,17 @@ from app.services import online_cache  # noqa: E402
 _CACHE_TMP = Path(tempfile.mkdtemp(prefix="tm-cache-"))
 online_cache._root_cache_dir = lambda: _CACHE_TMP
 
+# 曲库与音乐目录同样指向临时目录：否则测试会往项目根目录的 data/ 与 music/ 里写东西
+_LIB_TMP = Path(tempfile.mkdtemp(prefix="tm-lib-"))
+from app.models import database as _db  # noqa: E402
+
+_db.DATA_DIR = _LIB_TMP / "data"
+_db.DB_PATH = _db.DATA_DIR / "library.db"
+
+from app.utils import paths as _paths  # noqa: E402
+
+_paths.music_dir = lambda: _LIB_TMP / "music"
+
 PAYLOAD = bytes(range(256)) * 40  # 10240 字节确定性内容
 IMAGE = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 4  # 伪 JPEG 字节
 UPSTREAM = {}  # 记录上游最近一次收到的请求头
@@ -61,6 +72,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         UPSTREAM["headers"] = {k.lower(): v for k, v in self.headers.items()}
         UPSTREAM["path"] = self.path
         UPSTREAM["count"] = UPSTREAM.get("count", 0) + 1  # 用于验证缓存命中时不再打上游
+        if self.path.startswith("/song.mp3"):
+            # 只统计音频请求：封面/其它资源的请求不该影响「有没有重复取音频」的判断
+            UPSTREAM["audio"] = UPSTREAM.get("audio", 0) + 1
         if self.path.startswith("/cover.jpg"):
             self._send(IMAGE, 200, "image/jpeg", {"Content-Length": str(len(IMAGE))})
             return
@@ -314,6 +328,199 @@ def main() -> int:
 
     online_cache.clear()
     ok("清空后占用归零", online_cache.stats()["bytes"] == 0, json.dumps(online_cache.stats()))
+
+    # ---- 歌词缓存也要被统计与清空 ----
+    # 歌词缓存由主进程（Node）写入，Flask 只负责统计和清理 —— 但设置页展示的是同一个数字，
+    # 所以必须算进来，否则「已用」会少一块，用户清空后仍看到文件残留。
+    online_cache.clear()
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:lyr:320k").get_data()
+    lyr_dir = online_cache.lyrics_dir()
+    lyr_dir.mkdir(parents=True, exist_ok=True)
+    (lyr_dir / "abc123.json").write_text('{"lines":[{"t":1,"text":"x"}]}', "utf-8")
+    (lyr_dir / "def456.json").write_text('{"lines":[{"t":2,"text":"y"}]}', "utf-8")
+    st = online_cache.stats()
+    ok("歌词缓存：单独统计份数与占用", st["lyricsFiles"] == 2 and st["lyricsBytes"] > 0, json.dumps(st))
+    ok("歌词缓存：不并进音频 bytes（容量上限只管音频）", st["bytes"] == len(PAYLOAD), json.dumps(st))
+    ok("歌词缓存：totalBytes 含音频与歌词", st["totalBytes"] == st["bytes"] + st["lyricsBytes"], json.dumps(st))
+
+    r26 = client.get("/api/online/cache")
+    ok(
+        "歌词缓存：统计接口透出 lyricsBytes",
+        "lyricsBytes" in r26.get_json()["data"] and "totalBytes" in r26.get_json()["data"],
+        json.dumps(r26.get_json()),
+    )
+
+    r27 = client.post("/api/online/cache/clear")
+    st = online_cache.stats()
+    ok(
+        "歌词缓存：清空接口一并清掉歌词",
+        r27.status_code == 200 and st["lyricsBytes"] == 0 and st["bytes"] == 0 and not any(lyr_dir.glob("*")),
+        json.dumps(st),
+    )
+
+    # ---- 在线歌曲入库：收藏 / 歌单 / 下载 ----
+    # 目标：在线歌曲只需在 songs 表里占一行，就能复用既有收藏与歌单机制
+    from app.services import library_service
+
+    online_cache.clear()
+    online_cache.save_config({"enabled": True, "maxBytes": 1024 ** 3})
+    online_cache.clear()
+
+    payload = {
+        "source": "kw",
+        "platformId": "MUSIC_7788",
+        "title": "测试歌曲",
+        "artist": "测试歌手",
+        "album": "测试专辑",
+        "duration": 215.4,
+        "coverUrl": f"http://127.0.0.1:{port}/cover.jpg",
+        "quality": "320k",
+        # 完整 musicInfo：源脚本解析地址时要用到平台专有字段，必须原样存下来
+        "meta": {"rid": "MUSIC_7788", "songmid": "MUSIC_7788", "DC_TARGETID": "MUSIC_7788"},
+    }
+    r30 = client.post("/api/online/register", json=payload)
+    song = r30.get_json()["data"]
+    sid = song["id"]
+    ok("入库：注册在线歌曲返回本地 id", r30.status_code == 200 and isinstance(sid, int), json.dumps(song))
+    ok("入库：来源与平台 ID 已记录", song["online_source"] == "kw" and song["online_id"] == "MUSIC_7788", json.dumps(song))
+    ok("入库：首选音质已记录", song["online_quality"] == "320k", json.dumps(song))
+    ok(
+        "入库：完整 musicInfo 已留存（下次从收藏播放仍能解析）",
+        json.loads(song["online_meta"])["DC_TARGETID"] == "MUSIC_7788",
+        json.dumps(song.get("online_meta")),
+    )
+
+    r31 = client.post("/api/online/register", json=payload)
+    ok("入库：重复注册幂等（同一行）", r31.get_json()["data"]["id"] == sid, json.dumps(r31.get_json()))
+
+    r32 = client.post("/api/online/register", json={"source": "", "platformId": ""})
+    ok("入库：缺 source/platformId → 400", r32.status_code == 400, str(r32.status_code))
+
+    # 在线歌曲不应混进本地音乐库列表
+    ids = [s["id"] for s in client.get("/api/songs").get_json()["data"]]
+    ok("入库：在线歌曲不出现在本地音乐库", sid not in ids, f"ids={ids}")
+
+    lib = client.get("/api/online/library").get_json()["data"]
+    ok("入库：在线曲库能列出它", any(s["id"] == sid for s in lib), json.dumps(lib))
+
+    # 收藏：复用既有 /api/favorites（这正是入库的目的）
+    r33 = client.post(f"/api/favorites/{sid}")
+    ok("收藏：在线歌曲可收藏", r33.status_code == 200 and r33.get_json()["data"]["favorite"] is True, json.dumps(r33.get_json()))
+    fav_ids = [s["id"] for s in client.get("/api/favorites").get_json()["data"]]
+    ok("收藏：出现在收藏列表里", sid in fav_ids, f"ids={fav_ids}")
+    ok(
+        "收藏：可按收藏过滤在线曲库",
+        [s["id"] for s in client.get("/api/online/library?favorite=1").get_json()["data"]] == [sid],
+        json.dumps(client.get("/api/online/library?favorite=1").get_json()),
+    )
+
+    # 歌单：同样复用既有接口
+    pl_id = client.post("/api/playlists", json={"name": "在线测试歌单"}).get_json()["data"]["id"]
+    r34 = client.post(f"/api/playlists/{pl_id}/songs", json={"song_id": sid})
+    ok("歌单：在线歌曲可加入歌单", r34.status_code == 200 and r34.get_json()["data"]["added"] is True, json.dumps(r34.get_json()))
+    pl_songs = client.get(f"/api/playlists/{pl_id}/songs").get_json()["data"]
+    ok("歌单：歌单里能查到它", any(s["id"] == sid for s in pl_songs), json.dumps(pl_songs))
+    # 歌单查询曾自己手抄一份列清单，漏掉 online_source 后在线歌曲会被前端当成
+    # 「本地歌曲」去请求 /stream/<id>（文件不存在，直接播不出声）。这里锁住这个契约。
+    ok(
+        "歌单：返回行必须带在线标记（否则前端会当本地歌去读文件）",
+        any(s.get("online_source") == "kw" for s in pl_songs),
+        json.dumps(pl_songs),
+    )
+    ok(
+        "歌单：返回行与 songs 表列定义同源（含完整 musicInfo）",
+        any(s.get("online_meta") for s in pl_songs),
+        json.dumps(pl_songs),
+    )
+
+    # 首选音质可改
+    r35 = client.put(f"/api/online/songs/{sid}/quality", json={"quality": "flac"})
+    ok("音质：可记住首选音质", r35.get_json()["data"]["online_quality"] == "flac", json.dumps(r35.get_json()))
+    r36 = client.put("/api/online/songs/999999/quality", json={"quality": "flac"})
+    ok("音质：非在线歌曲 → 404", r36.status_code == 404, str(r36.status_code))
+
+    # ---- 下载：把在线音频真正取回本地并登记为本地歌曲 ----
+    audio_url = f"http://127.0.0.1:{port}/song.mp3"
+    dl_payload = {
+        "url": audio_url,
+        "source": "kw",
+        "key": "kw:MUSIC_7788:320k",
+        "quality": "320k",
+        "platformId": "MUSIC_7788",
+        "songId": sid,
+        "meta": {
+            "title": "测试歌曲",
+            "artist": "测试歌手",
+            "album": "测试专辑",
+            "duration": 215.4,
+            "coverUrl": f"http://127.0.0.1:{port}/cover.jpg",
+        },
+        "lyrics": "[00:01.00]测试歌词\n[00:03.00]第二行",
+    }
+    r40 = client.post("/api/online/download", json=dl_payload)
+    dl_song = r40.get_json()["data"]
+    ok("下载：返回登记后的本地歌曲", r40.status_code == 200 and dl_song and dl_song["id"] != sid, json.dumps(r40.get_json())[:200])
+    ok("下载：本地歌曲不带在线标记", dl_song["online_source"] == "", json.dumps(dl_song))
+    ok("下载：元数据取自在线信息（而非文件名）", dl_song["title"] == "测试歌曲" and dl_song["artist"] == "测试歌手", json.dumps(dl_song))
+    ok("下载：封面已入库", bool(dl_song["has_cover"]), json.dumps(dl_song))
+    ok("下载：时长已记录", abs(dl_song["duration"] - 215.4) < 0.01, json.dumps(dl_song))
+
+    dest = Path(dl_song["path"])
+    ok("下载：文件已落盘且大小与上游一致", dest.is_file() and dest.stat().st_size == len(PAYLOAD), f"{dest} {dest.stat().st_size if dest.is_file() else 'N/A'}")
+    ok("下载：文件名含歌手与歌名", dest.name.startswith("测试歌手 - 测试歌曲"), dest.name)
+    ok("下载：歌词已写成同名 .lrc", dest.with_suffix(".lrc").is_file() and "测试歌词" in dest.with_suffix(".lrc").read_text("utf-8"), str(dest.with_suffix(".lrc")))
+    ok("下载：文件位于 music 目录内", dest.parent == _paths.music_dir(), str(dest.parent))
+
+    local_ids = [s["id"] for s in client.get("/api/songs").get_json()["data"]]
+    ok("下载：已出现在本地音乐库", dl_song["id"] in local_ids, f"ids={local_ids}")
+
+    dl_keys = client.get("/api/online/downloaded").get_json()["data"]
+    ok("下载：已下载键可查（供搜索页标「已下载」）", "kw:MUSIC_7788" in dl_keys, json.dumps(dl_keys))
+
+    # 重名不覆盖：再下一次应生成 "(1)"
+    r41 = client.post("/api/online/download", json=dl_payload)
+    dest2 = Path(r41.get_json()["data"]["path"])
+    ok("下载：重名不覆盖，自动加序号", dest2 != dest and dest2.name.endswith("(1).mp3"), str(dest2))
+
+    # 播放缓存命中时直接复制，不再回上游
+    online_cache.clear()
+    client.get(f"/api/online/proxy?url={quote(audio_url, safe='')}&source=kw&key=kw:MUSIC_9999:320k").get_data()
+    before = UPSTREAM.get("audio", 0)
+    r42 = client.post(
+        "/api/online/download",
+        json={**dl_payload, "key": "kw:MUSIC_9999:320k", "meta": {**dl_payload["meta"], "title": "缓存直出"}},
+    )
+    ok(
+        "下载：命中播放缓存时直接复制（不回上游）",
+        r42.status_code == 200 and UPSTREAM.get("audio", 0) == before,
+        f"audio {before} → {UPSTREAM.get('audio', 0)}",
+    )
+    ok("下载：缓存直出的文件大小正确", Path(r42.get_json()["data"]["path"]).stat().st_size == len(PAYLOAD))
+
+    # 进度接口（下载是同步的，故结束后应看到 done）
+    prog = client.get("/api/online/download/progress?key=kw:MUSIC_7788:320k").get_json()["data"]
+    ok("下载：进度接口返回完成状态", prog and prog["done"] and prog["percent"] == 100, json.dumps(prog))
+    ok("下载：未知键返回 null", client.get("/api/online/download/progress?key=none").get_json()["data"] is None)
+
+    # 非法参数
+    ok("下载：缺 url → 400", client.post("/api/online/download", json={"source": "kw"}).status_code == 400)
+    ok(
+        "下载：拒绝 file:// 协议",
+        client.post("/api/online/download", json={"url": "file:///etc/passwd"}).status_code == 400,
+    )
+
+    # 移出曲库：只影响在线记录，已下载的本地文件不受影响
+    r43 = client.delete(f"/api/online/songs/{sid}")
+    ok("移出：在线记录已删除", r43.status_code == 200 and all(s["id"] != sid for s in client.get("/api/online/library").get_json()["data"]))
+    ok("移出：已下载的本地歌曲仍在", dl_song["id"] in [s["id"] for s in client.get("/api/songs").get_json()["data"]])
+    ok("移出：本地歌曲不可用该接口删", client.delete(f"/api/online/songs/{dl_song['id']}").status_code == 404)
+
+    # 编辑在线歌曲的标签 / 歌词：没有本地文件，只落库，不应报错
+    sid2 = client.post("/api/online/register", json={**payload, "platformId": "MUSIC_5566"}).get_json()["data"]["id"]
+    r44 = client.put(f"/api/songs/{sid2}", json={"title": "改过的标题"})
+    ok("编辑：在线歌曲标签可改（只落库）", r44.status_code == 200 and r44.get_json()["data"]["title"] == "改过的标题", json.dumps(r44.get_json()))
+    r45 = client.put(f"/api/lyrics/{sid2}", json={"text": "[00:01.00]改过的歌词"})
+    ok("编辑：在线歌曲歌词可改（只落库）", r45.status_code == 200 and r45.get_json()["data"]["title"] == "改过的标题")
 
     server.shutdown()
     return 1 if globals().get("_failed") else 0

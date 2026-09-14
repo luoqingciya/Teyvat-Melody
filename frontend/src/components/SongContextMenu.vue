@@ -9,36 +9,74 @@
         @contextmenu.prevent
       >
         <div class="song-ctx__title">
-          <p class="song-ctx__name">{{ song?.title || "" }}</p>
-          <p class="song-ctx__artist">{{ song?.artist || "未知艺术家" }}</p>
+          <p class="song-ctx__name">{{ song?.title || song?.name || "" }}</p>
+          <p class="song-ctx__artist">{{ song?.artist || song?.singer || t("online.unknownArtist") }}</p>
         </div>
 
         <button class="song-ctx__item" @click="$emit('play')">
           <AppIcon :name="playing ? 'check' : 'play'" :size="15" />
-          <span>{{ playing ? "正在播放" : "播放" }}</span>
+          <span>{{ playing ? t("ctx.playing") : t("ctx.play") }}</span>
         </button>
         <button class="song-ctx__item" @click="$emit('play-next')">
           <AppIcon name="list-music" :size="15" />
-          <span>下一首播放</span>
+          <span>{{ t("ctx.playNext") }}</span>
         </button>
         <button class="song-ctx__item" @click="$emit('add-queue')">
           <AppIcon name="add-to" :size="15" />
-          <span>加入队列</span>
+          <span>{{ t("ctx.addQueue") }}</span>
         </button>
-        <!-- 在线歌曲无本地实体：收藏 / 详情 / 编辑信息不适用（Phase 3 范围内不提供） -->
-        <template v-if="!online">
+
+        <!-- 收藏与歌单对本地 / 在线一视同仁：在线歌曲会先自动入库拿到本地 id -->
+        <div class="song-ctx__divider"></div>
+        <button class="song-ctx__item" @click="$emit('toggle-fav')">
+          <AppIcon :name="fav ? 'heart' : 'heart-outline'" :size="15" />
+          <span>{{ fav ? t("ctx.unfavorite") : t("ctx.favorite") }}</span>
+        </button>
+        <button class="song-ctx__item" @click="$emit('add-playlist')">
+          <AppIcon name="list" :size="15" />
+          <span>{{ t("playlist.addTo") }}</span>
+        </button>
+
+        <!-- 在线歌曲专属：音质切换与下载 -->
+        <template v-if="online">
           <div class="song-ctx__divider"></div>
-          <button class="song-ctx__item" @click="$emit('toggle-fav')">
-            <AppIcon :name="fav ? 'heart' : 'heart-outline'" :size="15" />
-            <span>{{ fav ? "取消收藏" : "收藏" }}</span>
+          <p class="song-ctx__label">{{ t("online.quality") }}</p>
+          <div class="song-ctx__chips">
+            <button
+              v-for="q in qualityOptions"
+              :key="q"
+              class="quality-chip"
+              :class="{ 'quality-chip--on': q === quality }"
+              :title="q"
+              @click="$emit('set-quality', q)"
+            >
+              {{ qualityLabel(q) }}
+            </button>
+          </div>
+          <button class="song-ctx__item" :disabled="downloaded" @click="$emit('download')">
+            <AppIcon name="download" :size="15" />
+            <span>
+              {{
+                downloaded
+                  ? t("online.downloaded")
+                  : downloadPercent != null
+                    ? t("online.downloadingPct", { p: downloadPercent })
+                    : t("online.download")
+              }}
+            </span>
           </button>
+        </template>
+
+        <!-- 本地歌曲专属：详情 / 编辑信息（在线歌曲没有本地文件可编辑） -->
+        <template v-else>
+          <div class="song-ctx__divider"></div>
           <button class="song-ctx__item" @click="$emit('detail')">
             <AppIcon name="info" :size="15" />
-            <span>查看详情</span>
+            <span>{{ t("ctx.detail") }}</span>
           </button>
           <button class="song-ctx__item" @click="$emit('edit')">
             <AppIcon name="edit" :size="15" />
-            <span>编辑信息</span>
+            <span>{{ t("ctx.edit") }}</span>
           </button>
         </template>
       </div>
@@ -49,6 +87,8 @@
 <script setup>
 import { ref, watch, nextTick, onBeforeUnmount } from "vue";
 import AppIcon from "./AppIcon.vue";
+import { qualityLabel } from "@/utils/onlineSong";
+import { useI18n } from "@/utils/i18n";
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -57,18 +97,46 @@ const props = defineProps({
   song: { type: Object, default: null },
   playing: { type: Boolean, default: false },
   fav: { type: Boolean, default: false },
-  // 在线歌曲：隐藏"收藏 / 查看详情 / 编辑信息"（无本地实体，不适用）
+  // 在线歌曲：显示「音质切换 / 下载」，隐藏「详情 / 编辑信息」（无本地文件，不适用）
   online: { type: Boolean, default: false },
+  // 该平台源声明支持的音质（在线歌曲）
+  qualities: { type: Array, default: () => [] },
+  quality: { type: String, default: "" },
+  downloaded: { type: Boolean, default: false },
+  downloadPercent: { type: Number, default: null },
 });
-const emit = defineEmits(["close", "play", "play-next", "add-queue", "toggle-fav", "detail", "edit"]);
+const emit = defineEmits([
+  "close",
+  "play",
+  "play-next",
+  "add-queue",
+  "toggle-fav",
+  "add-playlist",
+  "set-quality",
+  "download",
+  "detail",
+  "edit",
+]);
+
+const { t } = useI18n();
 
 const rootEl = ref(null);
 const px = ref(0);
 const py = ref(0);
 
-const MENU_W = 200;
-const MENU_H = 240;
+const MENU_W = 210;
+const MENU_H = 320;
 const GAP = 6;
+
+// 音质选项：源声明的音质 + 一个「自动」（交给降级链挑最高可用）
+const qualityOptions = ref([]);
+watch(
+  () => [props.qualities, props.online],
+  () => {
+    qualityOptions.value = props.online ? ["", ...(props.qualities || [])] : [];
+  },
+  { immediate: true }
+);
 
 // 限制菜单不出视口：出现后测量实际尺寸并回夹
 watch(
@@ -134,7 +202,7 @@ onBeforeUnmount(detachGlobalNow);
 .song-ctx {
   position: fixed;
   z-index: 600;
-  width: 200px;
+  width: 210px;
   padding: var(--space-2);
   border-radius: var(--radius-lg);
   border: 1px solid var(--teyvat-card-border);
@@ -179,17 +247,51 @@ onBeforeUnmount(detachGlobalNow);
   transition: background var(--t-fast), color var(--t-fast);
   text-align: left;
 }
-.song-ctx__item:hover {
+.song-ctx__item:hover:not(:disabled) {
   background: color-mix(in srgb, var(--teyvat-gold) 12%, transparent);
   color: var(--teyvat-gold);
 }
-.song-ctx__item:hover :deep(.app-icon) {
+.song-ctx__item:hover:not(:disabled) :deep(.app-icon) {
   color: var(--teyvat-gold);
+}
+.song-ctx__item:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .song-ctx__divider {
   height: 1px;
   background: var(--teyvat-card-border);
   margin: var(--space-1) var(--space-1);
+}
+.song-ctx__label {
+  padding: 0 var(--space-3) var(--space-1);
+  font-size: 11px;
+  color: var(--teyvat-text-secondary);
+}
+.song-ctx__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 var(--space-3) var(--space-2);
+}
+.quality-chip {
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--teyvat-card-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--teyvat-text-secondary);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.quality-chip:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--teyvat-text-primary);
+}
+.quality-chip--on {
+  background: color-mix(in srgb, var(--teyvat-gold) 20%, transparent);
+  border-color: color-mix(in srgb, var(--teyvat-gold) 50%, transparent);
+  color: var(--teyvat-gold);
 }
 </style>
 

@@ -4,6 +4,7 @@
 Phase 4 起由 SQLite（app.models.database）提供持久化存储，
 封面以 BLOB 内嵌，列表查询不返回 cover 大字段。
 """
+import json
 import shutil
 import threading
 import time
@@ -219,10 +220,208 @@ def _store_copy(src: Path, dest_dir: Path) -> Path:
 
 
 def all_songs() -> list[dict]:
-    """获取全部歌曲（列表字段，不含 cover 大字段）。"""
+    """获取全部**本地**歌曲（列表字段，不含 cover 大字段）。
+
+    在线歌曲记录不在此列 —— 它们没有本地文件，混进音乐库会让「库里有歌却播不出声」
+    这种错觉出现；它们由 list_online_songs() 单独列出，但收藏与歌单是共用的。
+    """
     return db.fetch_all(
-        f"SELECT {db.SONG_COLS} FROM songs ORDER BY title COLLATE NOCASE, artist"
+        f"SELECT {db.SONG_COLS} FROM songs WHERE {db.LOCAL_ONLY} "
+        "ORDER BY title COLLATE NOCASE, artist"
     )
+
+
+# ---- 在线歌曲入库（Phase 5） ----
+# 目的：让在线歌曲也能被**收藏**、加进**歌单**、写进**最近播放**与**播放统计** ——
+# 这些机制都挂在 songs.id 上，所以在线歌曲只需在 songs 表里占一行即可全部复用，
+# 无需为在线场景再造一套平行机制。
+
+
+def online_path(source: str, platform_id: str) -> str:
+    """在线歌曲在 songs.path 上的占位值（该列 NOT NULL + UNIQUE，必须给个稳定值）。
+
+    形如 `online://kw/MUSIC_123`：不会被当成真实路径使用（播放走源解析 + 同源代理），
+    但足以保证同一首歌重复入库时命中同一行。
+    """
+    return f"online://{source}/{platform_id}"
+
+
+def upsert_online_song(
+    source: str,
+    platform_id: str,
+    *,
+    title: str = "",
+    artist: str = "",
+    album: str = "",
+    duration: float = 0,
+    cover_url: str = "",
+    quality: str = "",
+    meta: Optional[dict] = None,
+) -> Optional[dict]:
+    """把一首在线歌曲登记进曲库（幂等），返回该行。
+
+    已存在则只刷新元信息：**不覆盖收藏状态**，`quality` 为空时保留原有偏好音质
+    （用户手动选的音质不该被搜索结果里的空值冲掉）。
+
+    `meta` 是搜索适配器给出的完整 musicInfo（各平台字段不同）。存下它而不是只存 id，
+    是因为下次从「收藏 / 歌单」播放时源脚本仍需要那些字段来解析地址。
+    """
+    source = (source or "").strip()
+    platform_id = str(platform_id or "").strip()
+    if not source or not platform_id:
+        return None
+    meta_json = None
+    if isinstance(meta, dict) and meta:
+        try:
+            meta_json = json.dumps(meta, ensure_ascii=False)
+        except (TypeError, ValueError):
+            meta_json = None
+    row = db.fetch_one(
+        "SELECT id FROM songs WHERE online_source = ? AND online_id = ?", (source, platform_id)
+    )
+    if row:
+        db.execute(
+            "UPDATE songs SET title = ?, artist = ?, album = ?, duration = ?, "
+            "cover_url = COALESCE(NULLIF(?, ''), cover_url), "
+            "online_meta = COALESCE(?, online_meta), "
+            "online_quality = COALESCE(NULLIF(?, ''), online_quality) WHERE id = ?",
+            (
+                title or "",
+                artist or "",
+                album or "",
+                float(duration or 0),
+                cover_url or "",
+                meta_json,
+                quality or "",
+                row["id"],
+            ),
+        )
+        return get_song(row["id"])
+    new_id = db.execute(
+        "INSERT INTO songs(path, title, artist, album, duration, "
+        "online_source, online_id, online_quality, cover_url, online_meta) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            online_path(source, platform_id),
+            title or "",
+            artist or "",
+            album or "",
+            float(duration or 0),
+            source,
+            platform_id,
+            quality or None,
+            cover_url or None,
+            meta_json,
+        ),
+    )
+    return get_song(new_id)
+
+
+def list_online_songs(favorite_only: bool = False) -> list[dict]:
+    """列出已入库的在线歌曲（收藏页 / 在线搜索页的「已收藏」标记用）。"""
+    where = "online_source <> ''"
+    if favorite_only:
+        where += " AND favorite = 1"
+    return db.fetch_all(
+        f"SELECT {db.SONG_COLS} FROM songs WHERE {where} "
+        "ORDER BY title COLLATE NOCASE, artist"
+    )
+
+
+def get_online_song(song_id: int) -> Optional[dict]:
+    """按 id 获取在线歌曲记录；该 id 不是在线歌曲则返回 None。"""
+    row = db.fetch_one(
+        f"SELECT {db.SONG_COLS} FROM songs WHERE id = ? AND online_source <> ''", (song_id,)
+    )
+    return row if row else None
+
+
+def set_online_quality(song_id: int, quality: str) -> Optional[dict]:
+    """记住某首在线歌曲的首选音质（下次播放 / 下载直接用它）。"""
+    if get_online_song(song_id) is None:
+        return None
+    db.execute("UPDATE songs SET online_quality = ? WHERE id = ?", ((quality or "").strip() or None, song_id))
+    return get_song(song_id)
+
+
+def remove_online_song(song_id: int) -> bool:
+    """把在线歌曲移出曲库（连同其收藏与歌单归属）。本地歌曲不受影响。"""
+    if get_online_song(song_id) is None:
+        return False
+    db.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+    return True
+
+
+def downloaded_keys() -> list[str]:
+    """已下载入库的在线歌曲键（`{平台}:{平台ID}`）。
+
+    下载时把来源记在 `source_path` 上，这里反解出来，供在线搜索页标注「已下载」——
+    避免用户对同一首歌反复点下载。
+    """
+    rows = db.fetch_all(
+        "SELECT source_path FROM songs WHERE source_path LIKE 'online://%'"
+    )
+    out: list[str] = []
+    for r in rows:
+        rest = (r["source_path"] or "")[len("online://"):]
+        source, _, platform_id = rest.partition("/")
+        if source and platform_id:
+            out.append(f"{source}:{platform_id}")
+    return out
+
+
+def register_file(stored: Path, overrides: Optional[dict] = None) -> Optional[dict]:
+    """把**已在磁盘上**的音频文件登记入库（在线下载完成后调用）。
+
+    与扫描入库的区别：不做复制、不遍历目录，只解析这一个文件并 upsert。
+    显式传入的 overrides（标题 / 艺术家 / 专辑 / 时长 / 封面字节 / 歌词 / source_path）
+    优先于文件内嵌标签 —— 第三方 CDN 下回来的文件常常没有标签，靠在线元数据补齐才有意义。
+    """
+    stored = Path(stored)
+    if not stored.is_file():
+        return None
+    meta = metadata_parser.parse(stored)
+    cover = meta.pop("cover", None)
+    ov = overrides or {}
+    if ov.get("cover"):
+        cover = ov["cover"]
+    lyrics = ov["lyrics"] if ov.get("lyrics") is not None else meta.get("lyrics")
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO songs(path, title, artist, album, duration, cover, lyrics, "
+            "sample_rate, bitrate, channels, format, source_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET "
+            "title=excluded.title, artist=excluded.artist, album=excluded.album, "
+            "duration=excluded.duration, "
+            "cover=COALESCE(excluded.cover, songs.cover), "
+            "lyrics=COALESCE(excluded.lyrics, songs.lyrics), "
+            "sample_rate=excluded.sample_rate, bitrate=excluded.bitrate, "
+            "channels=excluded.channels, format=excluded.format, "
+            "source_path=COALESCE(excluded.source_path, songs.source_path)",
+            (
+                str(stored),
+                (ov.get("title") or meta["title"] or stored.stem),
+                (ov.get("artist") if ov.get("artist") is not None else meta["artist"]) or "",
+                (ov.get("album") if ov.get("album") is not None else meta["album"]) or "",
+                float(ov.get("duration") or meta["duration"] or 0),
+                cover,
+                lyrics,
+                meta.get("sample_rate", 0),
+                meta.get("bitrate", 0),
+                meta.get("channels", 0),
+                meta.get("format", ""),
+                ov.get("source_path"),
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            f"SELECT {db.SONG_COLS} FROM songs WHERE path = ?", (str(stored),)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_song(song_id: int) -> Optional[dict]:
@@ -291,13 +490,21 @@ def toggle_favorite(song_id: int) -> Optional[bool]:
     return bool(new_state)
 
 
+def _is_online(song_id: int) -> bool:
+    """该 id 是否为在线歌曲记录（其 path 是 `online://…` 占位值，不是真实文件）。"""
+    row = db.fetch_one("SELECT online_source FROM songs WHERE id = ?", (song_id,))
+    return bool(row and row["online_source"])
+
+
 def update_song_metadata(song_id: int, title: str, artist: str, album: str) -> Optional[dict]:
     """编辑歌曲标签并写回文件 + 数据库。成功返回更新后的歌曲，失败返回 None。"""
     path = get_song_path(song_id)
     if not path:
         return None
-    # 先写回文件；失败不阻断数据库更新（用户仍能保留编辑值）
-    metadata_parser.write_tags(Path(path), title, artist, album)
+    # 在线歌曲没有本地文件可写，只更新数据库字段（改动同样能持久保存）
+    if not _is_online(song_id):
+        # 先写回文件；失败不阻断数据库更新（用户仍能保留编辑值）
+        metadata_parser.write_tags(Path(path), title, artist, album)
     updates = []
     params = []
     if title is not None:
@@ -324,6 +531,10 @@ def set_song_lyrics(song_id: int, text: str) -> Optional[dict]:
     if not path:
         return None
     value = (text or "").strip() or None
+    # 在线歌曲：只落库（编辑后的歌词一样能在界面上显示与复用）
+    if _is_online(song_id):
+        db.execute("UPDATE songs SET lyrics = ? WHERE id = ?", (value, song_id))
+        return get_song(song_id)
     try:
         lrc_path = Path(path).with_suffix(".lrc")
         if value:
@@ -348,7 +559,8 @@ def get_duplicates() -> list[dict]:
     返回分组列表：[{ title, artist, count, songs: [...] }]，按 count 降序。
     """
     rows = db.fetch_all(
-        f"SELECT {db.SONG_COLS} FROM songs ORDER BY title COLLATE NOCASE, artist"
+        f"SELECT {db.SONG_COLS} FROM songs WHERE {db.LOCAL_ONLY} "
+        "ORDER BY title COLLATE NOCASE, artist"
     )
     groups: dict[tuple, list[dict]] = {}
     for r in rows:

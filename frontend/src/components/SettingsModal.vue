@@ -101,8 +101,14 @@
             {{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}<template
               v-if="cache.partialBytes"
             >{{ t("settings.cachePartial", { size: formatBytes(cache.partialBytes) }) }}</template>
+            <template v-if="cache.lyricsBytes"
+            >　·　{{ t("settings.cacheLyrics", { n: cache.lyricsFiles || 0, size: formatBytes(cache.lyricsBytes) }) }}</template>
           </span>
-          <button class="ui-btn ui-btn--ghost settings__action" :disabled="!cache.bytes" @click="onClearCache">
+          <button
+            class="ui-btn ui-btn--ghost settings__action"
+            :disabled="!cache.totalBytes"
+            @click="onClearCache"
+          >
             {{ t("settings.cacheClear") }}
           </button>
         </div>
@@ -499,7 +505,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import AppModal from "./AppModal.vue";
 import { useConfigStore } from "@/stores/config";
 import { usePlayerStore } from "@/stores/player";
@@ -643,7 +649,17 @@ function onSkipUpdate() {
 
 // ---- 在线播放缓存 ----
 const { getOnlineCache, clearOnlineCache, setOnlineCacheConfig } = useApi();
-const cache = ref({ enabled: true, maxBytes: 0, maxBytesOptions: [], bytes: 0, files: 0 });
+const cache = ref({
+  enabled: true,
+  maxBytes: 0,
+  maxBytesOptions: [],
+  bytes: 0,
+  files: 0,
+  partialBytes: 0,
+  lyricsBytes: 0,
+  lyricsFiles: 0,
+  totalBytes: 0,
+});
 const cacheMsg = ref("");
 
 /** 字节 → 易读单位（上限选项与占用展示共用） */
@@ -738,7 +754,11 @@ async function onReloadSource(s) {
   await loadSources();
 }
 
-// 打开设置弹窗时刷新源列表、版本号与缓存占用（状态可能已变化）
+// 打开设置弹窗时刷新源列表、版本号与缓存占用（状态可能已变化）。
+// 弹窗开着时缓存还在持续增长（后台补完、边播边写），所以开个轻量轮询 ——
+// 否则用户盯着数字不动，会以为缓存坏了。
+let cacheTimer = null;
+
 watch(
   () => props.modelValue,
   (v) => {
@@ -746,9 +766,16 @@ watch(
       loadSources();
       loadAppVersion();
       loadCache();
+      clearInterval(cacheTimer);
+      cacheTimer = setInterval(loadCache, 2000);
+    } else {
+      clearInterval(cacheTimer);
+      cacheTimer = null;
     }
   }
 );
+
+onUnmounted(() => clearInterval(cacheTimer));
 </script>
 
 <style scoped>

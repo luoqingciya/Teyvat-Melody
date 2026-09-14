@@ -173,12 +173,14 @@ const ok = (name, cond, extra) => {
       state = await cdp.eval(`(() => {
         const rows = [...document.querySelectorAll('.online-row')];
         const empty = document.querySelector('.online-view__empty');
-        const toast = document.querySelector('.tm-toast-host');
+        const host = document.querySelector('.tm-toast-host');
+        const err = document.querySelector('.tm-toast--error');
         return {
           rows: rows.length,
           first: rows[0] ? rows[0].innerText.replace(/\\s+/g, ' ').trim().slice(0, 90) : null,
           empty: empty ? empty.textContent.trim() : null,
-          toast: toast ? toast.textContent.trim() : '',
+          toast: host ? host.textContent.replace(/\\s+/g, ' ').trim() : '',
+          toastErr: err ? err.textContent.replace(/\\s+/g, ' ').trim() : '',
         };
       })()`);
       if (state.rows > 0) break;
@@ -191,7 +193,7 @@ const ok = (name, cond, extra) => {
       `${state?.empty} ${state?.toast}`);
     ok("搜索结果已渲染到列表", state && state.rows > 0, state?.empty || "0 行");
     ok("结果行含歌名与来源", !!(state?.first && state.first.length > 3), state?.first);
-    ok("无失败 toast", !state?.toast, state?.toast);
+    ok("搜索未报错", !state?.toastErr, state?.toastErr || state?.toast);
     if (!state?.rows) throw new Error("无结果，跳过播放验证");
 
     // 6) 点第一条播放：验证在线播放链路（online:getUrl + 同源代理取流）
@@ -204,16 +206,18 @@ const ok = (name, cond, extra) => {
         const row = document.querySelector('.online-row--active');
         // 控制条里两个 .time-display：前者当前时间，后者总时长
         const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
-        const toast = document.querySelector('.tm-toast-host');
+        const host = document.querySelector('.tm-toast-host');
+        const err = document.querySelector('.tm-toast--error');
         return {
           active: !!row,
           activeText: row ? row.innerText.replace(/\\s+/g, ' ').trim().slice(0, 60) : null,
           current: times[0] || null,
           duration: times[1] || null,
-          toast: toast ? toast.textContent.trim() : '',
+          toast: host ? host.textContent.replace(/\\s+/g, ' ').trim() : '',
+          toastErr: err ? err.textContent.replace(/\\s+/g, ' ').trim() : '',
         };
       })()`);
-      if (play.toast) break; // 已报错，不必再等
+      if (play.toastErr) break; // 已报错，不必再等
       const gotMeta = play.duration && play.duration !== "00:00" && play.duration !== "--:--";
       const advancing = play.current && play.current !== "00:00";
       if (gotMeta && advancing) break;
@@ -221,7 +225,7 @@ const ok = (name, cond, extra) => {
     }
     console.log("  播放状态:", JSON.stringify(play));
     ok("点击结果后该行变为当前播放项", !!play?.active, "未出现 .online-row--active");
-    ok("播放未报错（源解析 + 代理取流成功）", !play?.toast, play?.toast);
+    ok("播放未报错（源解析 + 代理取流成功）", !play?.toastErr, play?.toastErr || play?.toast);
     ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
     ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
 
@@ -239,27 +243,31 @@ const ok = (name, cond, extra) => {
       console.log(`SKIP  未找到网易云结果（${wyClicked}），跳过失败警示断言`);
     } else {
       let wyState = null;
+      let sawToast = false;
       for (let i = 0; i < 40; i++) {
         wyState = await cdp.eval(`(() => {
-          const toast = document.querySelector('.tm-toast-host');
+          const host = document.querySelector('.tm-toast-host');
           const chip = [...document.querySelectorAll('.plat-chip')].find((c) => /网易云/.test(c.textContent));
           const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
           return {
-            toast: toast ? toast.textContent.replace(/\\s+/g, ' ').trim().slice(0, 70) : '',
+            toast: host ? host.textContent.replace(/\\s+/g, ' ').trim().slice(0, 70) : '',
             warned: !!(chip && chip.classList.contains('plat-chip--warn')),
             chipTitle: chip ? (chip.getAttribute('title') || '') : '',
             playing: !!times[1] && times[1] !== '00:00' && times[1] !== '--:--',
           };
         })()`);
-        if (wyState.warned || wyState.toast) break;
+        if (wyState.toast) sawToast = true;
+        if (wyState.warned) break;
+        // 已经报了错却迟迟没出现警示（刷新提示是异步的），再给几秒就判定失败
+        if (sawToast && i > 12) break;
         await sleep(500);
       }
       console.log("  网易云结果:", JSON.stringify(wyState));
       if (wyState?.warned) {
         ok("播不了的平台在筛选条上留下警示（⚠）", true);
         ok("警示的 tooltip 带上失败原因", /失败/.test(wyState.chipTitle || ""), wyState.chipTitle);
-      } else if (wyState?.toast) {
-        ok("播放失败时筛选条应留下警示", false, wyState.toast);
+      } else if (sawToast) {
+        ok("播放失败时筛选条应留下警示", false, wyState?.toast);
       } else {
         console.log("SKIP  网易云本次可正常播放，跳过失败警示断言（源后端支持情况会变）");
       }
@@ -276,6 +284,212 @@ const ok = (name, cond, extra) => {
     console.log("  缓存状态:", JSON.stringify(cacheState));
     ok("在线播放后音频已缓存到本地", !!cacheState && cacheState.files > 0, JSON.stringify(cacheState));
     ok("缓存占用已统计到字节数", !!cacheState && cacheState.bytes > 0, JSON.stringify(cacheState));
+
+    // 6d) 在线歌曲入库：右键菜单（音质 / 下载 / 加入歌单）+ 收藏 + 歌单 + 换音质 + 下载。
+    //     这四项都要跨「渲染进程 → 主进程 → Flask → SQLite」多道边界，
+    //     单元测试里都是打桩，只有真实界面点一遍才能确认真的通了。
+    //     先把第一条设为当前播放项（6b 点过网易云，当前播放项可能已经不是它）。
+    await cdp.eval("document.querySelector('.online-row').click()");
+    await sleep(3000);
+
+    const menuState = await cdp.eval(`(async () => {
+      const row = document.querySelector('.online-row');
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
+      await new Promise((r) => setTimeout(r, 250));
+      const menu = document.querySelector('.song-ctx');
+      if (!menu) return { err: 'no-menu' };
+      return {
+        items: [...menu.querySelectorAll('.song-ctx__item')].map((b) => b.textContent.trim()),
+        chips: [...menu.querySelectorAll('.quality-chip')].map((b) => b.textContent.trim()),
+      };
+    })()`);
+    console.log("  在线歌曲右键菜单:", JSON.stringify(menuState));
+    ok("右键菜单含「收藏」", !!menuState?.items?.some((s) => /收藏/.test(s)), JSON.stringify(menuState));
+    ok("右键菜单含「加入歌单」", !!menuState?.items?.some((s) => /加入歌单/.test(s)), JSON.stringify(menuState));
+    ok("右键菜单含「下载到本地」", !!menuState?.items?.some((s) => /下载/.test(s)), JSON.stringify(menuState));
+    ok("右键菜单含音质选项（来自源声明）", !!menuState?.chips?.length, JSON.stringify(menuState?.chips));
+    ok("本地歌曲专属项未出现在在线菜单里", !menuState?.items?.some((s) => /编辑信息/.test(s)), JSON.stringify(menuState?.items));
+
+    // 关掉菜单（Esc），改用行内按钮收藏。
+    // 收藏是**切换**语义，且上一轮跑测可能已经收藏过，所以断言「状态被切换」而不是「变成已收藏」——
+    // 否则第二次跑就会误报（这正是最初踩到的坑）。
+    await cdp.eval("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+    await sleep(200);
+
+    const favState = await cdp.eval(`(async () => {
+      const lib = await fetch('/api/online/library').then((r) => r.json());
+      const target = (lib.data || [])[0] || null;
+      const favsBefore = await fetch('/api/favorites').then((r) => r.json());
+      const wasFav = !!target && (favsBefore.data || []).some((s) => s.id === target.id);
+
+      const row = document.querySelector('.online-row');
+      const btns = row.querySelectorAll('.op-btn');
+      if (btns.length < 5) return { err: 'op-btn=' + btns.length };
+      btns[3].click(); // 收藏
+      await new Promise((r) => setTimeout(r, 3000));
+
+      const [lib2, favsAfter] = await Promise.all([
+        fetch('/api/online/library').then((r) => r.json()),
+        fetch('/api/favorites').then((r) => r.json()),
+      ]);
+      const first = (lib2.data || [])[0] || null;
+      const nowFav = !!first && (favsAfter.data || []).some((s) => s.id === first.id);
+      return {
+        lib: (lib2.data || []).length,
+        favCount: (favsAfter.data || []).length,
+        wasFav,
+        nowFav,
+        flipped: wasFav !== nowFav,
+        firstTitle: first ? first.title : null,
+        firstSource: first ? first.online_source : null,
+      };
+    })()`);
+    console.log("  收藏结果:", JSON.stringify(favState));
+    ok("收藏在线歌曲 → 已入库到曲库", favState?.lib > 0, JSON.stringify(favState));
+    ok("收藏在线歌曲 → 收藏状态被切换", favState?.flipped === true, JSON.stringify(favState));
+    ok(
+      "收藏列表与该曲收藏状态一致",
+      favState?.nowFav ? favState.favCount > 0 : favState?.favCount === 0,
+      JSON.stringify(favState)
+    );
+    ok("入库记录带有来源平台（说明不是本地歌曲）", !!favState?.firstSource, JSON.stringify(favState));
+
+    // 加入歌单：右键菜单 → 选择器 → 新建歌单并加入。
+    // 歌单名带时间戳：既保证每轮都走「新建」分支，也避免历史遗留歌单干扰断言。
+    const plName = `在线E2E歌单-${Date.now()}`;
+    const plState = await cdp.eval(`(async () => {
+      const NAME = ${JSON.stringify(plName)};
+      const row = document.querySelector('.online-row');
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
+      await new Promise((r) => setTimeout(r, 250));
+      const add = [...document.querySelectorAll('.song-ctx__item')].find((b) => /加入歌单/.test(b.textContent));
+      if (!add) return { err: 'no-add-item' };
+      add.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const input = document.querySelector('.pick__input');
+      if (!input) return { err: 'no-picker' };
+      input.value = NAME;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 150));
+      document.querySelector('.pick__create .ui-btn').click();
+      await new Promise((r) => setTimeout(r, 3500));
+
+      const pls = await fetch('/api/playlists').then((r) => r.json());
+      const target = (pls.data || []).find((p) => p.name === NAME);
+      if (!target) return { err: 'playlist-not-created', names: (pls.data || []).map((p) => p.name) };
+      const songs = await fetch('/api/playlists/' + target.id + '/songs').then((r) => r.json());
+      const first = (songs.data || [])[0] || null;
+      // 清理：测试歌单用完即删，别把开发机的歌单列表越堆越乱
+      await fetch('/api/playlists/' + target.id, { method: 'DELETE' });
+      return {
+        playlistId: target.id,
+        count: (songs.data || []).length,
+        first: first ? { title: first.title, source: first.online_source } : null,
+      };
+    })()`);
+    console.log("  加入歌单结果:", JSON.stringify(plState));
+    ok("加入歌单：可从菜单新建歌单", !!plState?.playlistId, JSON.stringify(plState));
+    ok("加入歌单：在线歌曲已进入歌单", plState?.count > 0, JSON.stringify(plState));
+    ok("加入歌单：歌单内保留在线来源（否则会被当成本地歌去请求文件）", !!plState?.first?.source, JSON.stringify(plState));
+
+    // 换音质：点音质 chip 后应重新解析地址并从原位置续播（不是从 00:00 重来）
+    const qState = await cdp.eval(`(async () => {
+      const row = document.querySelector('.online-row--active') || document.querySelector('.online-row');
+      const before = document.querySelector('.pc-btn--quality') ? document.querySelector('.pc-btn--quality').textContent.trim() : null;
+      const beforeTime = [...document.querySelectorAll('.time-display')][0]?.textContent.trim();
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
+      await new Promise((r) => setTimeout(r, 250));
+      const chips = [...document.querySelectorAll('.quality-chip')];
+      const target = chips.find((c) => /320K/.test(c.textContent)) || chips[chips.length - 1];
+      if (!target) return { err: 'no-chip', chips: chips.map((c) => c.textContent.trim()) };
+      const picked = target.textContent.trim();
+      target.click();
+      await new Promise((r) => setTimeout(r, 6000));
+      const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
+      const toast = document.querySelector('.tm-toast-host');
+      return {
+        before,
+        picked,
+        after: document.querySelector('.pc-btn--quality') ? document.querySelector('.pc-btn--quality').textContent.trim() : null,
+        beforeTime,
+        current: times[0],
+        duration: times[1],
+        toast: toast ? toast.textContent.trim() : '',
+      };
+    })()`);
+    console.log("  换音质结果:", JSON.stringify(qState));
+    ok("控制条显示在线音质徽标", !!qState?.before, JSON.stringify(qState));
+    ok("切换音质未报错", !qState?.toast, qState?.toast);
+    ok("切换后仍有有效音质（重新解析成功）", !!qState?.after && qState.after !== "…", JSON.stringify(qState));
+    ok(
+      "切换后未从头播放（进度被保留）",
+      !!qState?.current && qState.current !== "00:00",
+      `before=${qState?.beforeTime} after=${qState?.current}`
+    );
+
+    // 下载到本地曲库：走「选音质 → 主进程解析地址 → 后端取流落盘 → 登记为本地歌曲」全链路。
+    // 挑一条**还没下载过**的结果（已下载的按钮是禁用的，点它只会空转）——
+    // 顺便验证「已下载时按钮禁用」这条防重复下载的约束。
+    const dlState = await cdp.eval(`(async () => {
+      const rows = [...document.querySelectorAll('.online-row')];
+      const doneRow = rows.find((r) => r.querySelector('.tag-done'));
+      const target = rows.find((r) => !r.querySelector('.tag-done'));
+      if (!target) return { err: 'all-downloaded' };
+      const disabledWhenDone = doneRow ? doneRow.querySelectorAll('.op-btn')[4].disabled : null;
+
+      // 先在右键菜单里选 320K：验证「下载可指定音质」这条路
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
+      await new Promise((r) => setTimeout(r, 250));
+      const chip = [...document.querySelectorAll('.quality-chip')].find((c) => /320K/.test(c.textContent));
+      if (!chip) return { err: 'no-320k-chip' };
+      chip.click();
+      await new Promise((r) => setTimeout(r, 700));
+
+      const beforeSongs = ((await fetch('/api/songs').then((r) => r.json())).data || []).length;
+      const beforeKeys = ((await fetch('/api/online/downloaded').then((r) => r.json())).data || []).length;
+
+      target.querySelectorAll('.op-btn')[4].click();
+      let toast = '';
+      for (let i = 0; i < 200; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const host = document.querySelector('.tm-toast-host');
+        toast = host ? host.textContent.replace(/\\s+/g, ' ').trim() : '';
+        if (/已下载/.test(toast) || /下载失败/.test(toast)) break;
+      }
+      const songs = (await fetch('/api/songs').then((r) => r.json())).data || [];
+      const keys = (await fetch('/api/online/downloaded').then((r) => r.json())).data || [];
+      // 用 toast 里的歌名精确找到刚入库的那首，核对封面/时长确实写进去了
+      const m = toast.match(/已下载《(.+?)》/);
+      const added = m ? songs.find((s) => s.title === m[1]) : null;
+      return {
+        disabledWhenDone,
+        toast: toast.slice(0, 80),
+        beforeSongs,
+        afterSongs: songs.length,
+        beforeKeys,
+        afterKeys: keys.length,
+        added: added ? { title: added.title, duration: added.duration, hasCover: !!added.has_cover } : null,
+      };
+    })()`);
+    console.log("  下载结果:", JSON.stringify(dlState));
+    ok("已下载的歌，下载按钮被禁用（防重复下载）", dlState?.disabledWhenDone === true, JSON.stringify(dlState));
+    ok("下载未失败", !/下载失败/.test(dlState?.toast || ""), dlState?.toast);
+    ok("下载完成后进入本地音乐库", (dlState?.afterSongs ?? 0) > (dlState?.beforeSongs ?? 0), JSON.stringify(dlState));
+    ok("「已下载」标记可查（避免重复下载）", (dlState?.afterKeys ?? 0) > (dlState?.beforeKeys ?? 0), JSON.stringify(dlState));
+    ok("下载的歌带时长（说明文件可解析）", (dlState?.added?.duration ?? 0) > 0, JSON.stringify(dlState));
+    // 封面取决于该平台是否提供：酷我该字段常为空（回退占位图），不能强断言。
+    // 「有封面时必定写进库」由 tests/online-proxy.test.py 用可控假封面确定性覆盖。
+    if (dlState?.added?.hasCover) {
+      ok("下载的歌带封面", true);
+    } else {
+      console.log("SKIP  该结果源未提供封面（酷我常见），跳过封面断言");
+    }
+
+    // 歌词缓存：播放/下载后 lyrics 目录应有内容（设置页的占用统计会带上它）
+    const lyricCache = await cdp.eval(`fetch('/api/online/cache').then((r) => r.json()).then((j) => j.data)`);
+    console.log("  歌词缓存:", JSON.stringify(lyricCache));
+    ok("歌词已缓存到本地", !!lyricCache && lyricCache.lyricsFiles > 0, JSON.stringify(lyricCache));
+    ok("缓存统计含歌词与总计字节", !!lyricCache && lyricCache.totalBytes >= lyricCache.bytes, JSON.stringify(lyricCache));
 
     // 7) 设置页「关于与更新」：真实走一次 GitHub Release 检查
     await cdp.eval(`(() => {
