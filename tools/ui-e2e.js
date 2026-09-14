@@ -279,6 +279,61 @@ const ok = (name, cond, extra) => {
         `${JSON.stringify(persisted.before.kw)} → ${JSON.stringify(persisted.after?.kw)}`);
     }
 
+    // 5d) 平台勾选也要持久化：取消勾选一个平台 → 切走再切回 → 仍是取消状态。
+    //     用户报过「平台选择记不住」：根因是默认全选只写在内存、从不落盘，
+    //     且无法区分「用户主动全取消」与「还没选过」（两者结构上都是空数组）。
+    const platState = await cdp.eval(`(async () => {
+      const chipsOf = () => [...document.querySelectorAll('.plat-chip')];
+      const onKeys = () => chipsOf().filter((c) => c.classList.contains('plat-chip--on')).map((c) => c.textContent.trim());
+      const usable = chipsOf().filter((c) => !c.disabled);
+      if (usable.length < 2) return { skip: '需要至少 2 个可用平台才能验证取消勾选' };
+
+      const before = onKeys();
+      // 点掉最后一个可用平台
+      const target = usable[usable.length - 1];
+      const targetName = target.textContent.trim();
+      target.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const afterClick = onKeys();
+
+      // 切走再切回（组件会被卸载，只有落盘的状态能活下来）
+      document.querySelector('a[href="#/songs"]').click();
+      await new Promise((r) => setTimeout(r, 400));
+      document.querySelector('a[href="#/online"]').click();
+      for (let i = 0; i < 60; i++) {
+        if (document.querySelector('.plat-chip')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      return { before, afterClick, targetName, afterBack: onKeys() };
+    })()`);
+    console.log("  平台勾选:", JSON.stringify(platState));
+    if (platState?.skip) {
+      console.log("  （跳过平台持久化断言：" + platState.skip + "）");
+    } else {
+      ok(
+        "取消勾选平台后立即生效",
+        platState.afterClick.length === platState.before.length - 1 &&
+          !platState.afterClick.includes(platState.targetName),
+        `${JSON.stringify(platState.before)} → ${JSON.stringify(platState.afterClick)}`
+      );
+      ok(
+        "平台勾选跨页面往返保留（不被重置成全选）",
+        JSON.stringify(platState.afterBack) === JSON.stringify(platState.afterClick),
+        `期望 ${JSON.stringify(platState.afterClick)}，实际 ${JSON.stringify(platState.afterBack)}`
+      );
+      // 复原：把取消掉的平台勾回去，避免影响后续断言（如播放失败警示）
+      await cdp.eval(`(async () => {
+        const chip = [...document.querySelectorAll('.plat-chip')].find((c) => c.textContent.trim() === ${JSON.stringify(
+          platState.targetName
+        )} && !c.disabled);
+        if (chip && !chip.classList.contains('plat-chip--on')) {
+          chip.click();
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      })()`);
+    }
+
     // 6) 点第一条播放：验证在线播放链路（online:getUrl + 同源代理取流）
     //    判定要严：不能只看「行变高亮」——那只能说明 playQueue 被调用了，
     //    真正的失败（源解析不出地址）会晚几秒才以 toast 出现，且时长始终为 00:00。

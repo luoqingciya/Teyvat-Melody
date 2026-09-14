@@ -871,6 +871,9 @@ ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
 // page 从 1 开始；翻页由渲染进程累加，主进程只负责透传给各平台适配器。
 ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
   const available = playablePlatforms();
+  // ⚠️ 必须区分「一个平台都没勾选」和「根本没导入源」—— 旧实现把两者合并成
+  // 「尚未启用任何自定义源」，于是用户在界面上取消掉所有平台后会看到一条
+  // 指向设置页的误导提示（明明源是好的，只是他自己没勾平台）。
   const picked = (Array.isArray(sources) && sources.length ? sources : available).filter((s) =>
     available.includes(s)
   );
@@ -880,7 +883,9 @@ ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
       list: [],
       errors: [],
       availableSources: available,
-      message: "尚未启用任何支持在线播放的自定义源，请先在「设置 → 自定义源」导入并启用",
+      message: available.length
+        ? "没有勾选任何搜索平台，请在搜索框右侧至少选择一个平台"
+        : "尚未启用任何支持在线播放的自定义源，请先在「设置 → 自定义源」导入并启用",
     };
   }
   try {

@@ -6,14 +6,14 @@
           class="app-modal__mask"
           @click.self="maskClosable && $emit('update:modelValue', false)"
         ></div>
-        <div class="app-modal__panel" :style="{ width: width + 'px' }">
+        <div class="app-modal__panel" :style="panelStyle">
           <div class="app-modal__head">
             <span v-if="title" class="app-modal__title ui-heading">{{ title }}</span>
             <button class="app-modal__close ui-icon-btn" title="关闭" @click="$emit('update:modelValue', false)">
               <AppIcon name="x" :size="16" />
             </button>
           </div>
-          <div class="app-modal__body">
+          <div class="app-modal__body" :class="{ 'app-modal__body--fixed': height > 0 }">
             <slot />
           </div>
           <div v-if="$slots.foot || confirmText" class="app-modal__foot">
@@ -33,16 +33,25 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, watch } from "vue";
+import { computed, onBeforeUnmount, watch } from "vue";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: "" },
   confirmText: { type: String, default: "" },
   width: { type: Number, default: 380 },
+  /** 固定内容区高度（px）。0 = 跟随内容自适应（默认）。
+   *  多标签弹窗要传它 —— 否则切换标签时内容多少不同，弹窗会跟着一跳一跳的。 */
+  height: { type: Number, default: 0 },
   maskClosable: { type: Boolean, default: true },
 });
 const emit = defineEmits(["update:modelValue", "confirm"]);
+
+const panelStyle = computed(() => {
+  const s = { width: props.width + "px" };
+  if (props.height > 0) s.height = props.height + "px";
+  return s;
+});
 
 function confirm() {
   emit("confirm");
@@ -102,12 +111,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5) var(--space-2);
+  flex-shrink: 0; /* 固定高度弹窗里头部不能被压扁 */
 }
 .app-modal__body {
   padding: var(--space-3) var(--space-5) var(--space-2);
   overflow-y: auto; /* 内容超长时出现滑动条 */
   flex: 1 1 auto;
   min-height: 0;
+}
+/* 固定内容区高度：配合 height 属性使用，body 撑满剩余空间并独立滚动 */
+.app-modal__body--fixed {
+  flex: 1 1 auto;
 }
 .app-modal__body::-webkit-scrollbar {
   width: var(--space-2);

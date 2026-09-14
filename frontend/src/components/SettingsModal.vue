@@ -4,6 +4,7 @@
     :title="t('header.settings')"
     :confirm-text="t('settings.done')"
     :width="900"
+    :height="560"
     :mask-closable="false"
     @update:model-value="emit('update:modelValue', $event)"
     @confirm="emit('update:modelValue', false)"
@@ -890,12 +891,14 @@ onUnmounted(() => clearInterval(cacheTimer));
 
 <style scoped>
 /* 两栏：左侧分类标签（常驻），右侧内容区独立滚动。
-   高度交给 AppModal 的 body（max-height 82vh + overflow），这里只保证默认占满。 */
+   弹窗高度固定（AppModal 的 height），所以切换分类时窗口不会一跳一跳的；
+   内容多的分类在右侧**内部**滚动，标签栏始终可见。 */
 .settings {
   display: grid;
   grid-template-columns: 132px 1fr;
   gap: var(--space-5);
-  min-height: 460px;
+  height: 100%; /* 撑满 AppModal 固定高度的 body */
+  min-height: 0; /* 关键：让子项的 overflow 生效，否则内容会把容器顶高 */
 }
 
 /* ---- 分类标签 ---- */
@@ -905,6 +908,8 @@ onUnmounted(() => clearInterval(cacheTimer));
   gap: 2px;
   border-right: 1px solid var(--teyvat-card-border);
   padding-right: var(--space-2);
+  overflow-y: auto; /* 分类多了也不会把标签栏顶出可视区 */
+  flex-shrink: 0;
 }
 .settings__tab {
   display: flex;
@@ -948,8 +953,23 @@ onUnmounted(() => clearInterval(cacheTimer));
 }
 
 /* ---- 内容区 ---- */
+/* 用 grid + v-show 会同时展开所有 pane，所以这里让 panes 成为滚动容器，
+   只有当前显示的 pane 参与布局（v-show 用 display:none 隐藏其它 pane）。 */
 .settings__panes {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--space-2); /* 给滚动条留位置，避免贴住右边缘 */
+}
+.settings__panes::-webkit-scrollbar {
+  width: var(--space-2);
+}
+.settings__panes::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--teyvat-text-secondary) 36%, transparent);
+  border-radius: var(--radius-full);
+}
+.settings__panes::-webkit-scrollbar-thumb:hover {
+  background: var(--teyvat-gold);
 }
 .settings__pane {
   display: flex;

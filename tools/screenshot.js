@@ -1,9 +1,10 @@
 // 用 CDP 截取真实界面的截图：做排版 / 样式改动时用来自查，比盲改可靠。
 //
 // 用法：
-//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--settings] [--search=关键词] [--page=2]
+//   node tools/screenshot.js <输出文件.png> [--route=#/online] [--settings] [--tab=lyrics] [--search=关键词] [--page=2]
 //     --route    先切到该哈希路由（点侧栏链接，避免与路由初始化竞争）
 //     --settings 打开设置弹窗
+//     --tab      设置弹窗里切到该分类：playback / appearance / lyrics / online / about
 //     --search   在在线搜索页真的搜一次并等出结果（要看结果列表/翻页栏时用）
 //     --page     搜完再点 N-1 次「下一页」（用于给翻页后的状态截图）
 //
@@ -23,6 +24,9 @@ const route = (args.find((a) => a.startsWith("--route=")) || "").replace("--rout
 const openSettings = args.includes("--settings");
 const searchKw = (args.find((a) => a.startsWith("--search=")) || "").replace("--search=", "");
 const targetPage = Number((args.find((a) => a.startsWith("--page=")) || "").replace("--page=", "")) || 1;
+// 设置页分类（按左侧标签顺序的下标定位）：playback / appearance / lyrics / online / about
+const settingsTab = (args.find((a) => a.startsWith("--tab=")) || "").replace("--tab=", "");
+const TAB_ORDER = ["playback", "appearance", "lyrics", "online", "about"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -103,6 +107,16 @@ async function waitForPage(timeoutMs = 90000) {
         await sleep(250);
       }
       await sleep(400);
+
+      // 切到指定分类标签（设置页各分类高度应一致，切标签不该让弹窗跳动）
+      if (settingsTab) {
+        await evaluate(`(() => {
+          const tabs = [...document.querySelectorAll('.settings__tab')];
+          const idx = ${JSON.stringify(TAB_ORDER)}.indexOf(${JSON.stringify(settingsTab)});
+          if (idx >= 0 && tabs[idx]) tabs[idx].click();
+        })()`);
+        await sleep(500);
+      }
     }
 
     // 真的搜一次：翻页栏在结果列表末尾，不搜就截不到。

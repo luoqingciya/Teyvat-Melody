@@ -251,9 +251,10 @@ async function loadPlatforms() {
     qualitys.value = {};
     warnings.value = {};
   }
-  // 默认勾选全部可用平台；若上次已勾过，保留用户的勾选（那是偏好，不该每次进来被重置）
-  const prev = ui.picked.filter((k) => available.value.includes(k));
-  search.markPlatformsLoaded(prev.length ? prev : available.value);
+  // 把「当前可用平台」交给 store：它负责决定是套用默认全选（用户没动过勾选）
+  // 还是保留用户选择并剔掉已不可用的平台。组件不做这个判断 —— 那属于状态机语义，
+  // 放 store 里才测得到（tests/online-search-store.test.js）。
+  search.markPlatformsLoaded(available.value);
 }
 
 /** 只刷新失败提示，不动用户已勾选的平台（播放失败后调用） */
@@ -270,10 +271,10 @@ async function refreshWarnings() {
 
 function togglePlat(key) {
   if (!available.value.includes(key)) return;
-  const i = ui.picked.indexOf(key);
-  if (i >= 0) ui.picked.splice(i, 1);
-  else ui.picked.push(key);
-  search.persist();
+  const next = ui.picked.includes(key) ? ui.picked.filter((k) => k !== key) : [...ui.picked, key];
+  // setPicked 会打上「用户动过勾选」的标记并立刻落盘 —— 平台选择因此能跨重启保留，
+  // 且不会被下次的默认全选覆盖（见 store 里 pickedTouched 的注释）。
+  search.setPicked(next);
 }
 
 /** 清空搜索框（保留结果，用户可能只是想改词再搜） */
@@ -518,9 +519,11 @@ onActivated(restoreScroll);
 
 onUnmounted(() => {
   clearTimeout(scrollSaveTimer);
-  // 卸载前把当前滚动位置落定，保证切走再回来停在原处
+  // 卸载前把当前滚动位置落定，保证切走再回来停在原处。
+  // 这里用 flushNow 而不是 persist：persist 是 400ms 防抖，而组件马上就要销毁，
+  // 定时器有可能来不及触发（快切页面时尤其明显）→ 平台选择/现场就丢了。
   if (scroller.value) search.scrollTop.value = scroller.value.scrollTop;
-  search.persist();
+  search.flushNow();
 });
 
 // 播放失败后刷新失败提示：让「这个平台你的源播不了」立刻反映到筛选条上，
