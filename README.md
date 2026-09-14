@@ -95,7 +95,8 @@
 │   └── fixtures/              # 测试用源脚本样本（自造，非第三方）
 ├── tools/                     # 本地开发工具（不进 CI）
 │   ├── ui-e2e.js              # CDP 驱动真实 Electron 的界面端到端验证
-│   └── verify-frozen-paths.py # 验证**打包后**的数据目录选址（安装版不进安装目录）
+│   ├── verify-frozen-paths.py # 验证**打包后**后端的选址（安装版不进安装目录）
+│   └── verify-packaged-app.js # 验证真实打包布局 + 打包后应用的选址
 ├── .github/workflows/         # GitHub Actions（ci.yml 测试 / release.yml 打包发布）
 └── resources/                 # 打包资源（应用图标等）
 ```
@@ -177,19 +178,27 @@ npm run test:ui     # 前置：frontend/dist 已构建；sources/ 下至少有�
 
 ### 打包后的数据目录（改过 `paths.py` / `dataRoot.js` / 打包配置就该跑一次）
 
-`tests/paths.test.py` 与 `tests/data-root.test.js` 只能测**纯函数**（把 frozen/exe/LOCALAPPDATA
-当参数注入）。真正打包运行时才会走到的部分 —— `sys.frozen`、PyInstaller onedir 布局、
-环境变量读取 —— 由 `tools/verify-frozen-paths.py` 覆盖：它把打包好的后端分别放进
-**模拟安装版**（同级有 `Uninstall *.exe`）与**模拟免安装版**两棵树里各跑一次，
-看数据库实际落在哪里。用临时 `LOCALAPPDATA`，全程不碰真实用户目录。
+数据目录选址有两套实现（Electron 主进程 `electron/dataRoot.js` 与后端 `app/utils/paths.py`），
+两边必须算出**同一个**目录，否则会出现「主进程写一处、后端读另一处」这种隐蔽故障。
+单元测试（`tests/paths.test.py` / `tests/data-root.test.js`）只能测纯函数 ——
+把 frozen/exe/LOCALAPPDATA 当参数注入，**真实打包才会走到的部分覆盖不到**。
+所以另有两条验证：
 
 ```bash
+# ① 后端：把打包后的后端放进「模拟安装版 / 模拟免安装版」两棵树各跑一次，看数据库落在哪
 uv run pyinstaller build.spec --noconfirm --distpath backend-dist --workpath build-temp
 python tools/verify-frozen-paths.py
+
+# ② 主进程：在真实打包布局上校验选址规则（不需要打包）；有产物时还会实跑应用
+node tools/verify-packaged-app.js
+TEYVAT_INSTALLED_DIR=<你的安装目录> node tools/verify-packaged-app.js   # 连自定义安装目录一起验
 ```
 
 > **为什么必须验**：安装版若把数据写回安装目录，升级时会被卸载程序 `RMDir /r $INSTDIR` 删光 ——
 > 这正是 v1.0.6 修掉的「每次更新丢光全部数据」。这条规则不能只靠单元测试兜着。
+>
+> ⚠️ **本机跑 electron-builder 很慢**（实测 `--dir` 会卡在压缩阶段 20 分钟以上），
+> 需要实跑 ② 时优先用 CI 的产物；日常只跑 ① 与布局校验就够了。
 
 ## 在线更新
 
