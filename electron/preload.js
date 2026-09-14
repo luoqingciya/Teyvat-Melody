@@ -63,6 +63,9 @@ api.searchOnline = (keyword, sources) => invoke("online:search", { keyword, sour
 api.getOnlineLyric = (source, musicInfo) => invoke("online:lyric", { source, musicInfo });
 // 检查更新：查 GitHub Release 最新版本（主进程比对版本号后回传结果）
 api.getAppVersion = () => invoke("app:version");
+// 数据目录（设置页展示 + 一键打开）：安装版在 %LOCALAPPDATA%，免安装版在软件目录
+api.getDataDir = () => invoke("app:dataDir");
+api.openDataDir = () => invoke("app:openDataDir");
 api.checkUpdate = () => invoke("update:check");
 // 下载更新包（主进程流式写入临时目录，进度经 update:progress 回传）
 api.downloadUpdate = (url, name) => invoke("update:download", { url, name });

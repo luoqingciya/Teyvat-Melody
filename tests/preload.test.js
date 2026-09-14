@@ -97,6 +97,14 @@ const reactiveArr = (a) => new Proxy(a, {});
     const sent = calls[calls.length - 1].payload.musicInfo;
     ok("传给主进程的是深拷贝副本（非原引用）", sent !== proxySrc && sent.kw === true, JSON.stringify(sent));
 
+    // 数据目录：设置页要展示「我的数据到底在哪」，这两个方法必须存在且走对通道
+    ok("暴露 getDataDir 且路由到 app:dataDir", typeof exposed.getDataDir === "function");
+    await exposed.getDataDir();
+    ok("getDataDir 走 app:dataDir 通道", calls[calls.length - 1].channel === "app:dataDir", calls[calls.length - 1].channel);
+    ok("暴露 openDataDir 且路由到 app:openDataDir", typeof exposed.openDataDir === "function");
+    await exposed.openDataDir();
+    ok("openDataDir 走 app:openDataDir 通道", calls[calls.length - 1].channel === "app:openDataDir", calls[calls.length - 1].channel);
+
     ok("所有调用都经由 ipcRenderer.invoke", calls.length >= cases.length, `calls=${calls.length}`);
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);

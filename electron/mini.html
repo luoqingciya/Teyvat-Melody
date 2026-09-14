@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http://127.0.0.1:5000; img-src 'self' http://127.0.0.1:5000 data:; style-src 'self' 'unsafe-inline';" />
+  <!-- 后端端口是动态选定的（避免多实例抢同一端口），所以这里用端口通配符 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http://127.0.0.1:*; img-src 'self' http://127.0.0.1:* data:; style-src 'self' 'unsafe-inline';" />
   <title>提瓦特旋律 · 迷你播放器</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }

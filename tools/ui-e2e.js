@@ -66,7 +66,7 @@ async function waitForPage(timeoutMs = 90000) {
     try {
       const res = await fetch(`http://127.0.0.1:${PORT}/json/list`);
       const targets = await res.json();
-      const page = targets.find((t) => t.type === "page" && t.url.includes("127.0.0.1:5000"));
+      const page = targets.find((t) => t.type === "page" && /^http:\/\/127\.0\.0\.1:\d+\//.test(t.url));
       if (page?.webSocketDebuggerUrl) return page;
     } catch {
       /* 端口还没起来 */
@@ -448,7 +448,10 @@ const ok = (name, cond, extra) => {
       const beforeSongs = ((await fetch('/api/songs').then((r) => r.json())).data || []).length;
       const beforeKeys = ((await fetch('/api/online/downloaded').then((r) => r.json())).data || []).length;
 
-      target.querySelectorAll('.op-btn')[4].click();
+      // 连点两下：第二次必须被拦住，否则会落出两份重复文件（前端重入保护 + 后端同键闸）
+      const dlBtn = target.querySelectorAll('.op-btn')[4];
+      dlBtn.click();
+      dlBtn.click();
       let toast = '';
       for (let i = 0; i < 200; i++) {
         await new Promise((r) => setTimeout(r, 1000));
@@ -475,6 +478,11 @@ const ok = (name, cond, extra) => {
     ok("已下载的歌，下载按钮被禁用（防重复下载）", dlState?.disabledWhenDone === true, JSON.stringify(dlState));
     ok("下载未失败", !/下载失败/.test(dlState?.toast || ""), dlState?.toast);
     ok("下载完成后进入本地音乐库", (dlState?.afterSongs ?? 0) > (dlState?.beforeSongs ?? 0), JSON.stringify(dlState));
+    ok(
+      "连点两下只落一份文件（重入保护生效）",
+      (dlState?.afterSongs ?? 0) - (dlState?.beforeSongs ?? 0) === 1,
+      `+${(dlState?.afterSongs ?? 0) - (dlState?.beforeSongs ?? 0)} 首`
+    );
     ok("「已下载」标记可查（避免重复下载）", (dlState?.afterKeys ?? 0) > (dlState?.beforeKeys ?? 0), JSON.stringify(dlState));
     ok("下载的歌带时长（说明文件可解析）", (dlState?.added?.duration ?? 0) > 0, JSON.stringify(dlState));
     // 封面取决于该平台是否提供：酷我该字段常为空（回退占位图），不能强断言。
@@ -512,6 +520,23 @@ const ok = (name, cond, extra) => {
         return row ? row.textContent.replace(/\\s+/g, ' ').trim() : null;
       })()`);
       ok("设置页显示当前版本", !!version && /\d+\.\d+\.\d+/.test(version), version);
+
+      // 数据目录：用户得能自己确认「我的曲库/歌单到底存在哪」——
+      // 安装版的数据放在 %LOCALAPPDATA%（不放安装目录，否则升级会被卸载程序删光）
+      const dataDir = await cdp.eval(`(() => {
+        const row = [...document.querySelectorAll('.settings__row')].find((r) => /数据目录|Data folder/.test(r.textContent));
+        if (!row) return null;
+        const v = row.querySelector('.settings__value');
+        return v ? { text: v.textContent.trim(), title: v.getAttribute('title') || '' } : null;
+      })()`);
+      console.log("  数据目录:", JSON.stringify(dataDir));
+      ok("设置页显示数据目录", !!dataDir?.text, JSON.stringify(dataDir));
+      ok("数据目录是绝对路径", !!dataDir?.title && /^[A-Za-z]:[\\\\/]/.test(dataDir.title), JSON.stringify(dataDir));
+      ok(
+        "开发模式下数据目录 = 项目根（不误判为安装版）",
+        !!dataDir?.title && /Teyvat-Melody/i.test(dataDir.title) && !/%LOCALAPPDATA%/i.test(dataDir.title),
+        JSON.stringify(dataDir)
+      );
 
       // 在线播放缓存分组（本次新增）
       const cacheGroup = await cdp.eval(`(() => {

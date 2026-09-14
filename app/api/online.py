@@ -443,6 +443,21 @@ def set_song_quality(song_id: int):
 # 没有进度反馈的话用户会以为卡死了。
 _downloads: dict[str, dict] = {}
 _dl_lock = threading.Lock()
+# 进度表只保留最近这么多条。它是纯内存的临时状态，下载完就没用了；
+# 不设上限会随下载次数无限增长（每条还挂着完整的歌曲行）。
+_MAX_TRACKED_DOWNLOADS = 100
+
+
+def _prune_downloads_locked() -> None:
+    """清理已完成的旧进度记录（调用方必须已持有 _dl_lock）。
+
+    只删 `done` 的条目 —— 进行中的记录一旦被清掉，前端就再也轮询不到进度了。
+    """
+    while len(_downloads) > _MAX_TRACKED_DOWNLOADS:
+        victim = next((k for k, v in _downloads.items() if v.get("done")), None)
+        if victim is None:
+            return  # 全在进行中，宁可超一点也不能清掉别人正在看的进度
+        _downloads.pop(victim, None)
 
 
 def _dl_patch(key: str, patch: dict) -> None:
@@ -451,6 +466,31 @@ def _dl_patch(key: str, patch: dict) -> None:
     with _dl_lock:
         cur = _downloads.setdefault(key, {})
         cur.update(patch)
+        _prune_downloads_locked()
+
+
+def _dl_claim(key: str, name: str) -> bool:
+    """抢占一次下载：同一首歌同一音质同时只允许一个下载在跑。
+
+    没有这道闸，用户连点两下「下载」（或两个窗口同时点）就会落出两份重复文件 ——
+    前端把按钮置灰只是「尽量别让人点到」，真正说了算的是这里。
+    返回 False 表示已有同键下载在进行中。
+    """
+    if not key:
+        return True
+    with _dl_lock:
+        cur = _downloads.get(key)
+        if cur and not cur.get("done"):
+            return False
+        _downloads[key] = {
+            "received": 0,
+            "total": 0,
+            "done": False,
+            "error": None,
+            "name": name,
+        }
+        _prune_downloads_locked()
+        return True
 
 
 def _safe_filename(s: str, fallback: str = "在线歌曲") -> str:
@@ -513,7 +553,9 @@ def download():
     artist = str(meta.get("artist") or "").strip()
     stem = _safe_filename(f"{artist} - {title}" if artist else title)
     music = paths.music_dir()
-    _dl_patch(key, {"received": 0, "total": 0, "done": False, "error": None, "name": stem})
+    # 同一首歌同一音质已有下载在跑 → 拒绝，避免并发落出两份重复文件
+    if not _dl_claim(key, stem):
+        return _err("该歌曲正在下载中，请稍候", 409)
 
     try:
         # 1) 播放缓存命中 → 直接复制，秒完成（同一首刚播过时最常见）

@@ -502,6 +502,40 @@ def main() -> int:
     ok("下载：进度接口返回完成状态", prog and prog["done"] and prog["percent"] == 100, json.dumps(prog))
     ok("下载：未知键返回 null", client.get("/api/online/download/progress?key=none").get_json()["data"] is None)
 
+    # ---- 并发闸与进度表上限 ----
+    # 没有并发闸时，连点两下「下载」（或两个窗口同时点）会落出两份重复文件。
+    # 前端把按钮置灰只是「尽量别让人点到」，真正说了算的是后端这道闸。
+    from app.api.online import (  # noqa: E402
+        _MAX_TRACKED_DOWNLOADS,
+        _dl_claim,
+        _dl_patch,
+        _downloads,
+    )
+
+    _downloads.clear()
+    ok("并发闸：首次抢占成功", _dl_claim("kw:DUP:320k", "DUP") is True)
+    ok("并发闸：同键第二次被拒", _dl_claim("kw:DUP:320k", "DUP") is False)
+    r50 = client.post("/api/online/download", json={**dl_payload, "key": "kw:DUP:320k"})
+    ok("并发闸：正在下载中的同键请求返回 409", r50.status_code == 409, str(r50.status_code))
+    _dl_patch("kw:DUP:320k", {"done": True})
+    ok("并发闸：完成之后可以重新下载", _dl_claim("kw:DUP:320k", "DUP") is True)
+
+    # 进度表是纯内存的临时状态，下载完就没用了；不设上限会随下载次数无限增长
+    _downloads.clear()
+    for i in range(_MAX_TRACKED_DOWNLOADS + 20):
+        _dl_claim(f"kw:P{i}:320k", f"P{i}")
+        _dl_patch(f"kw:P{i}:320k", {"done": True})
+    ok("进度表：超出上限后自动清理已完成的记录", len(_downloads) <= _MAX_TRACKED_DOWNLOADS, str(len(_downloads)))
+
+    # 但进行中的记录不能被清掉 —— 清了前端就再也轮询不到进度
+    _downloads.clear()
+    _dl_claim("kw:KEEP:320k", "KEEP")
+    for i in range(_MAX_TRACKED_DOWNLOADS + 5):
+        _dl_claim(f"kw:Q{i}:320k", f"Q{i}")
+        _dl_patch(f"kw:Q{i}:320k", {"done": True})
+    ok("进度表：不清理进行中的记录", "kw:KEEP:320k" in _downloads, f"共 {len(_downloads)} 条")
+    _downloads.clear()
+
     # 非法参数
     ok("下载：缺 url → 400", client.post("/api/online/download", json={"source": "kw"}).status_code == 400)
     ok(

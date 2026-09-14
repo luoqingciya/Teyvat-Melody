@@ -68,6 +68,13 @@ export function useOnlineLibrary() {
     return !!key && downloadedKeys.value.has(key);
   }
 
+  /** 该曲是否正在下载（按钮据此置灰，避免连点出两份重复文件） */
+  function isDownloading(song) {
+    const key = onlineKeyOf(song);
+    const cur = key ? downloads.value[key] : null;
+    return !!cur && !cur.done;
+  }
+
   /**
    * 确保该在线歌曲已在曲库中（返回带整数 id 的歌曲对象）。
    * 搜索结果只有字符串 id，收藏 / 加歌单 / 播放统计都需要整数 id，故先登记。
@@ -144,6 +151,8 @@ export function useOnlineLibrary() {
       return null;
     }
     const key = onlineKeyOf(song);
+    // 重入保护：连点两次会并发落出两份重复文件（后端也有同键闸，这里先拦一道）
+    if (isDownloading(song)) return null;
     downloads.value = { ...downloads.value, [key]: { percent: 0, received: 0, total: 0, done: false } };
     try {
       const r = await bridge.getOnlineUrl(song.source, buildMusicInfo(song), quality || song.quality || "");
@@ -221,6 +230,7 @@ export function useOnlineLibrary() {
     loadDownloaded,
     qualitiesFor,
     isDownloaded,
+    isDownloading,
     ensureRegistered,
     toggleFavorite,
     addToPlaylist,

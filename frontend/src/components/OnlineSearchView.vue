@@ -105,9 +105,15 @@
           <button
             class="op-btn"
             :class="{ 'op-btn--on': online.isDownloaded(song) }"
-            :title="online.isDownloaded(song) ? t('online.downloaded') : t('online.download')"
+            :title="
+              online.isDownloaded(song)
+                ? t('online.downloaded')
+                : online.isDownloading(song)
+                  ? t('online.downloadingPct', { p: downloadPercentOf(song) ?? 0 })
+                  : t('online.download')
+            "
             :aria-label="t('online.download')"
-            :disabled="online.isDownloaded(song)"
+            :disabled="online.isDownloaded(song) || online.isDownloading(song)"
             @click.stop="downloadSong(song)"
           >
             <AppIcon name="download" :size="13" />
@@ -303,6 +309,12 @@ const ctxPercent = computed(() => {
   const p = ctx.value.song ? online.progressOf(ctx.value.song) : null;
   return p && !p.done && p.percent != null ? p.percent : null;
 });
+
+/** 某一行正在下载的进度百分比（行内按钮的 tooltip 用） */
+function downloadPercentOf(song) {
+  const p = online.progressOf(song);
+  return p && !p.done ? p.percent ?? 0 : null;
+}
 
 function openMenu(e, song) {
   ctx.value = { visible: true, x: e.clientX, y: e.clientY, song };

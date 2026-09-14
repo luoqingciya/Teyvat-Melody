@@ -27,7 +27,7 @@ async function waitForPage(timeoutMs = 90000) {
   while (Date.now() < deadline) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-      const page = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1:5000"));
+      const page = list.find((t) => t.type === "page" && /^http:\/\/127\.0\.0\.1:\d+\//.test(t.url));
       if (page?.webSocketDebuggerUrl) return page;
     } catch {
       /* 端口未就绪 */

@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const net = require("net");
 const { Transform, Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { SourceManager } = require("./sourceManager");
@@ -13,19 +14,77 @@ const onlineSearch = require("./onlineSearch");
 const onlineLyric = require("./onlineLyric");
 const updater = require("./updater");
 
-const BACKEND_URL = "http://127.0.0.1:5000";
+const BACKEND_HOST = "127.0.0.1";
+const DEFAULT_BACKEND_PORT = 5000;
+// 端口在启动时动态选定（见 pickFreePort）——固定端口会让「同时开着两个实例」
+// （便携版 + 安装版）互相串后端：后启动的抢不到端口，其窗口会连到先启动实例的后端，
+// 数据于是被写进对方的数据目录，看起来就像数据错乱/丢失。
+let backendPort = DEFAULT_BACKEND_PORT;
+let BACKEND_URL = `http://${BACKEND_HOST}:${backendPort}`;
 const IS_DEV = !app.isPackaged;
+const dataRootUtil = require("./dataRoot");
+
+// ---------------- 数据根目录 ----------------
+// 选址规则见 electron/dataRoot.js（与后端 app/utils/paths.py 必须一致）。
+// 安装版的数据放 %LOCALAPPDATA%\TeyvatMelody —— 因为安装目录在升级时会被
+// 旧版卸载程序 `RMDir /r $INSTDIR` 整个删掉，数据放里面每次更新都会丢光。
+function installDir() {
+  return dataRootUtil.installDir(process.execPath);
+}
+
+/** 是否为「安装版」（exe 同级有 Uninstall *.exe）。更新检查也用它判断分发方式。 */
+function isInstalledBuild() {
+  if (IS_DEV) return false;
+  return dataRootUtil.isInstalledBuild(installDir());
+}
+
+/** 数据根目录（data / music / cache / sources / .appdata 都放它下面） */
+function dataRoot() {
+  // 只读环境变量，不用 app.getPath —— 本函数在 app ready 之前就会被调用（重定向 userData），
+  // 拿不到 LOCALAPPDATA 时由 resolveDataRoot 退回安装目录
+  return dataRootUtil.resolveDataRoot({
+    isDev: IS_DEV,
+    exePath: process.execPath,
+    localAppData: process.env.LOCALAPPDATA,
+    projectRoot: path.resolve(__dirname, ".."),
+  });
+}
+
+/** 把老版本遗留在安装目录里的数据搬到新位置（只在安装版、且新位置还没有数据时执行）。 */
+function migrateLegacyData(newRoot, legacyRoot) {
+  if (!legacyRoot || path.resolve(newRoot) === path.resolve(legacyRoot)) return [];
+  if (fs.existsSync(path.join(newRoot, "data"))) return []; // 新位置已有数据 → 不动，避免覆盖
+  const moved = [];
+  for (const name of dataRootUtil.LEGACY_DATA_DIRS) {
+    const from = path.join(legacyRoot, name);
+    if (!fs.existsSync(from)) continue;
+    const to = path.join(newRoot, name);
+    try {
+      fs.mkdirSync(newRoot, { recursive: true });
+      try {
+        fs.renameSync(from, to); // 同盘：瞬间完成
+      } catch {
+        // 跨盘符 rename 会失败（装在 D:、数据在 C: 时很常见）→ 退回复制
+        fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: false });
+      }
+      moved.push(name);
+    } catch (e) {
+      console.warn(`[migrate] 迁移 ${name} 失败：${e.message}`);
+    }
+  }
+  if (moved.length) console.log(`[migrate] 已把历史数据搬到 ${newRoot}：${moved.join(", ")}`);
+  return moved;
+}
 
 // 把所有 Electron 端数据（桌面歌词设置、前端 localStorage 的配置/音量/播放进度/队列/歌词锁定等）
-// 统一放到软件根目录下，符合"运行产生的数据都在软件根目录"的约定。
-// 必须在创建任何窗口之前调用 app.setPath 重定向 userData。
-function dataRoot() {
-  // 打包：exe 所在目录（<根目录>/TeyvatMelody.exe）；开发：项目根目录
-  return IS_DEV ? path.resolve(__dirname, "..") : path.resolve(process.execPath, "..");
-}
+// 统一放到数据根目录下。必须在创建任何窗口之前调用 app.setPath 重定向 userData。
 (function ensureUserDataUnderRoot() {
+  const root = dataRoot();
+  // 安装版：先把旧版本遗留在安装目录里的数据搬出来（必须在 app.setPath 之前）
+  if (isInstalledBuild()) migrateLegacyData(root, installDir());
+
   const prevUserData = app.getPath("userData");
-  const newUserData = path.join(dataRoot(), ".appdata");
+  const newUserData = path.join(root, ".appdata");
   if (path.resolve(newUserData) === path.resolve(prevUserData)) return;
   app.setPath("userData", newUserData);
   // 首次运行时把旧 userData 里的既有数据（localStorage / 歌词设置）迁移到根目录，避免丢失历史配置
@@ -154,12 +213,34 @@ function locateBackendExe() {
 
 function startBackend() {
   const { cmd, args, cwd } = backendCommand();
-  backendProc = spawn(cmd, args, { cwd, stdio: "ignore" });
+  // 把选定的端口显式传给后端（缺省 5000 是给 `npm run dev:backend` 单独跑时用的）
+  backendProc = spawn(cmd, [...args, `--port=${backendPort}`], { cwd, stdio: "ignore" });
   backendProc.on("exit", (code) => {
     console.log("[backend] exited:", code);
     backendProc = null;
   });
 }
+
+/** 让操作系统分配一个空闲端口（用于后端，避免多实例抢同一个端口） */
+function pickFreePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on("error", () => resolve(DEFAULT_BACKEND_PORT));
+    srv.listen(0, BACKEND_HOST, () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+/** 选定端口 → 记下 URL → 拉起后端（早于 app ready，与 Electron 初始化并行） */
+const backendBoot = (async () => {
+  backendPort = await pickFreePort();
+  BACKEND_URL = `http://${BACKEND_HOST}:${backendPort}`;
+  console.log("[backend] port:", backendPort);
+  startBackend();
+})();
 
 function waitBackend(timeoutMs = 15000) {
   return new Promise((resolve) => {
@@ -824,18 +905,26 @@ const UPDATE_DIR = () => path.join(app.getPath("temp"), "TeyvatMelody-update");
 // 只允许从 GitHub 的发布域名下载，避免这段能力被当成任意下载器
 const UPDATE_URL_OK = /^https:\/\/(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)\//i;
 
-/** 是否为「安装版」：electron-builder 安装时会在安装目录写入卸载程序 */
-function isInstalledBuild() {
-  if (!app.isPackaged) return false;
-  try {
-    return fs.readdirSync(path.dirname(process.execPath)).some((f) => /^Uninstall .*\.exe$/i.test(f));
-  } catch {
-    return false;
-  }
-}
+// 注：isInstalledBuild() / dataRoot() / installDir() 定义在文件开头 ——
+// 数据根目录的选址要用到「是否安装版」，而那必须在 app ready 之前完成。
 
 // 当前应用版本（设置页「关于」展示用）
 ipcMain.handle("app:version", () => app.getVersion());
+
+// 数据目录（data / music / cache / sources 都在它下面）—— 设置页展示，用户能自己确认数据在哪
+ipcMain.handle("app:dataDir", () => dataRoot());
+
+// 在系统资源管理器里打开数据目录（不存在就先建出来，避免打开失败）
+ipcMain.handle("app:openDataDir", async () => {
+  const dir = dataRoot();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* 建不出来也让 shell 试一次，失败会有返回值 */
+  }
+  const err = await shell.openPath(dir);
+  return { ok: !err, message: err || "" };
+});
 
 // 查 GitHub Release 的最新版本并与当前版本比对；失败不抛错，返回 ok=false 供界面提示。
 // 顺带回传「是否安装版」与「按分发方式挑好的下载项」，界面据此决定按钮文案与后续动作。
@@ -965,8 +1054,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  // 尽早拉起后端子进程，与 Electron 初始化并行，缩短首屏等待
-  startBackend();
+  // 尽早拉起后端子进程（端口选定后立即 spawn），与 Electron 初始化并行，缩短首屏等待
+  backendBoot.catch((e) => console.error("[backend] 启动失败:", e.message));
   app.on("second-instance", () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
   });

@@ -436,6 +436,18 @@
           <span class="settings__value">v{{ appVersion || "—" }}</span>
         </div>
 
+        <!-- 数据目录：装的是安装版还是免安装版，数据落在哪里，用户应该能自己看到
+             （安装版升级时安装目录会被整个删掉，数据因此放在别处 —— 见 dataRoot.js） -->
+        <div v-if="dataDir" class="settings__row">
+          <span>{{ t("settings.dataDir") }}</span>
+          <span class="settings__value settings__value--path" :title="dataDir">{{ dataDir }}</span>
+        </div>
+        <div v-if="dataDir" class="settings__row settings__row--end">
+          <button class="ui-btn ui-btn--ghost settings__action" @click="openDataDir">
+            {{ t("settings.openDataDir") }}
+          </button>
+        </div>
+
         <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
         <div class="settings__row settings__row--end">
           <button
@@ -627,6 +639,7 @@ let sourceMsgTimer = 0;
 // ---- 关于与更新 ----
 const updater = useUpdater();
 const appVersion = ref("");
+const dataDir = ref("");
 
 async function loadAppVersion() {
   const api = window.pywebview?.api;
@@ -635,6 +648,31 @@ async function loadAppVersion() {
     appVersion.value = await api.getAppVersion();
   } catch {
     /* 拿不到版本号不影响其它功能 */
+  }
+}
+
+/** 取数据目录（data / music / cache / sources 都在它下面）。
+ *  安装版的数据放在 %LOCALAPPDATA% 而不是安装目录 —— 因为安装目录在升级时会被
+ *  旧版卸载程序整个删掉（详见 electron/dataRoot.js）。用户应该能自己看到它在哪。 */
+async function loadDataDir() {
+  const api = window.pywebview?.api;
+  if (!api || typeof api.getDataDir !== "function") return;
+  try {
+    dataDir.value = await api.getDataDir();
+  } catch {
+    /* 拿不到就不显示这一行 */
+  }
+}
+
+/** 在系统资源管理器里打开数据目录 */
+function openDataDir() {
+  const api = window.pywebview?.api;
+  if (api && typeof api.openDataDir === "function") {
+    try {
+      api.openDataDir();
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 
@@ -769,6 +807,7 @@ watch(
     if (v) {
       loadSources();
       loadAppVersion();
+      loadDataDir();
       loadCache();
       clearInterval(cacheTimer);
       cacheTimer = setInterval(loadCache, 2000);
@@ -1029,6 +1068,14 @@ onUnmounted(() => clearInterval(cacheTimer));
 .settings__value {
   color: var(--teyvat-text-secondary);
   font-variant-numeric: tabular-nums;
+}
+/* 数据目录可能很长（安装版是 %LOCALAPPDATA% 下的路径）：截断显示，完整路径看 title */
+.settings__value--path {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 /* ---- 按钮组：允许换行，避免窄窗里挤爆 ---- */

@@ -53,7 +53,11 @@
               {{ qualityLabel(q) }}
             </button>
           </div>
-          <button class="song-ctx__item" :disabled="downloaded" @click="$emit('download')">
+          <button
+            class="song-ctx__item"
+            :disabled="downloaded || downloadPercent != null"
+            @click="$emit('download')"
+          >
             <AppIcon name="download" :size="15" />
             <span>
               {{

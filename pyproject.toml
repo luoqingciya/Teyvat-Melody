@@ -3,7 +3,7 @@
 
 [project]
 name = "teyvat-melody"
-version = "1.0.5"
+version = "1.0.6"
 description = "原神主题风格本地音乐播放器桌面应用（Electron + Flask + Vue 3）"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
