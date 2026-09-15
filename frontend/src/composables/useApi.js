@@ -1,4 +1,6 @@
 // useApi：封装后端 REST 接口。渲染进程由 Flask 同源托管，直接 fetch 请求即可。
+import { platformIdOf } from "@/utils/onlineSong";
+
 function jget(url) {
   return fetch(url).then((r) => (r.status === 404 ? Promise.resolve(null) : r.json()));
 }
@@ -60,6 +62,32 @@ export function useApi() {
   }
   function recordPlay(songId) {
     return jpost(`/api/songs/${songId}/play`);
+  }
+  /**
+   * 上报一次播放，**支持尚未入库的在线歌曲**。
+   *
+   * 在线歌曲的 id 是平台字符串，后端没法直接记 —— 需要完整身份才能「先入库、再记录」。
+   * 返回入库后的歌曲行（在线歌曲据此拿到整数 id，之后就能进最近播放、被收藏/加歌单）。
+   */
+  function recordPlayback(song) {
+    if (!song) return Promise.resolve(null);
+    const id = typeof song === "object" ? song.id : song;
+    const unwrap = (r) => r?.data ?? null;
+    if (typeof id === "number") {
+      return jpost("/api/playback/record", { songId: id }).then(unwrap);
+    }
+    if (typeof song !== "object") return Promise.resolve(null);
+    return jpost("/api/playback/record", {
+      source: song.source || song.online_source || "",
+      platformId: platformIdOf(song),
+      title: song.title ?? song.name ?? "",
+      artist: song.artist ?? song.singer ?? "",
+      album: song.album ?? "",
+      duration: song.duration ?? song.interval ?? 0,
+      coverUrl: song.picUrl ?? song.cover ?? "",
+      quality: song.quality ?? "",
+      meta: song.meta ?? {},
+    }).then(unwrap);
   }
   function getPlaybackStats(days = 30) {
     return jget(`/api/playback/stats?days=${days}`);
@@ -135,6 +163,7 @@ export function useApi() {
     updateLyrics,
     getDuplicates,
     recordPlay,
+    recordPlayback,
     getPlaybackStats,
     getOnlineCache,
     clearOnlineCache,

@@ -15,6 +15,7 @@ import {
   DEFAULT_QUALITY_CHAIN,
   buildMusicInfo,
   decorateSong,
+  isOnlineRow,
   isOnlineSong,
   linesToLrc,
   onlineCacheKey,
@@ -78,10 +79,13 @@ export function useOnlineLibrary() {
   /**
    * 确保该在线歌曲已在曲库中（返回带整数 id 的歌曲对象）。
    * 搜索结果只有字符串 id，收藏 / 加歌单 / 播放统计都需要整数 id，故先登记。
+   *
+   * 已经有整数 id 就直接返回（幂等）：后端按「在线身份」查重，同一首歌永远命中同一行，
+   * 所以重复调用不会堆出多行；但能省掉一次往返。
    */
   async function ensureRegistered(song) {
     if (!isOnlineSong(song)) return song;
-    if (typeof song.id === "number" && song.online_source) return song;
+    if (typeof song.id === "number") return song;
     const row = await api.registerOnlineSong({
       source: song.source,
       platformId: platformIdOf(song),
@@ -192,6 +196,13 @@ export function useOnlineLibrary() {
 
       const local = res.data;
       downloads.value = { ...downloads.value, [key]: { percent: 100, done: true, song: local } };
+      // 下载完成后这首歌在曲库里已经是**本地行**（后端把它就地转了，不会另起一行）。
+      // 让搜索结果对象也跟着切到本地：此后播放直连本地文件（离线可用、不再耗流量），
+      // 但**保留 source / meta** —— 来源徽标与「已下载」标记仍要显示。
+      if (local && typeof local.id === "number" && !isOnlineRow(local)) {
+        song.id = local.id;
+        song.online = false;
+      }
       await Promise.all([library.load(), loadDownloaded()]);
       // 本地歌曲不走在线链路，直接刷新音乐库即可
       toast(`已下载《${local.title}》到本地音乐库`);

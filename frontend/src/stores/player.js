@@ -10,12 +10,14 @@ import {
   isSupported as isAudioFxSupported,
 } from "@/utils/audioFx";
 import { useConfigStore } from "@/stores/config";
+import { useLibraryStore } from "@/stores/library";
 import { useApi } from "@/composables/useApi";
 import { getProgress, saveProgress, clearProgress } from "@/utils/playbackProgress";
 import { saveLastQueue, loadLastQueue, clearLastQueue } from "@/utils/lastQueue";
 import { toastError } from "@/utils/toast";
 import {
   buildMusicInfo,
+  isOnlineRow,
   isOnlineSong,
   onlineCacheKey,
   proxyUrl,
@@ -390,8 +392,9 @@ export const usePlayerStore = defineStore("player", {
         this.onlineQuality = r.quality || "";
         getAudio().src = proxyUrl(r.url, song.source, onlineCacheKey(song, r.quality));
         this._startPlayback(cfg, song, opts);
-        // 已入库的在线歌曲（收藏 / 加歌单过）才有整数 id，可参与播放统计
-        if (typeof song.id === "number") useApi().recordPlay(song.id).catch(() => {});
+        // 上报播放（异步，不阻塞出声）。换音质（autoplay=false）只是换个源续播，
+        // 不算一次新播放，跳过以免刷量。
+        if (opts.autoplay !== false) this._recordOnlinePlay(song);
       } catch (e) {
         if (token !== onlineLoadToken) return;
         this.isPlaying = false;
@@ -400,6 +403,34 @@ export const usePlayerStore = defineStore("player", {
         toastError(`在线播放失败：${e.message}\n可尝试换用其他平台的搜索结果，或在「设置 → 自定义源」启用其他源`);
       } finally {
         if (token === onlineLoadToken) this.onlineLoading = false;
+      }
+    },
+
+    /**
+     * 上报一次在线播放。
+     *
+     * ⚠️ 在线歌曲的 id 是**平台字符串**（搜索结果的临时 id），而最近播放与播放统计
+     * 都挂在 `songs.id` 上。所以交给后端「先入库拿到整数 id、再记播放」，
+     * 拿到返回行后把 id 写回当前播放对象 —— 此后它就能进最近播放，也能被收藏 / 加歌单。
+     * 这是「最近播放里看不到在线歌曲」的修复点。
+     */
+    async _recordOnlinePlay(song) {
+      try {
+        // 原本就有整数 id 的，说明它早已在曲库里（收藏/加歌单/上次播放入库过），
+        // 不必再拉一次在线曲库。
+        const justRegistered = typeof song !== "object" || typeof song.id !== "number";
+        const row = await useApi().recordPlayback(song);
+        if (!row || typeof row.id !== "number" || typeof song !== "object") return;
+        song.id = row.id;
+        // 这首歌已经下载到本地：让它此后走本地文件播放（离线可用、不再耗流量），
+        // 但**保留 source / meta** —— 搜索页仍要显示来源徽标与「已下载」标记。
+        if (!isOnlineRow(row)) song.online = false;
+        useConfigStore().pushRecent(row.id);
+        // ⚠️ 刚入库的在线歌曲要进曲库 store 的 allSongs，否则「最近播放」按 id 反查时
+        // 找不到它（map.get 返回 undefined，被 filter 掉 → 页面空白）。
+        if (justRegistered) useLibraryStore().loadOnlineSongs().catch(() => {});
+      } catch {
+        /* 上报失败不影响播放 */
       }
     },
 

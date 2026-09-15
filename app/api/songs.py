@@ -99,6 +99,57 @@ def record_play(song_id: int):
     return ok({"song_id": song_id})
 
 
+@bp.post("/playback/record")
+def record_play_any():
+    """记录一次播放，**支持尚未入库的在线歌曲**。
+
+    请求体二选一：
+      · `{songId}` —— 本地歌曲，或已入库的在线歌曲（走上面的老接口也行）
+      · `{source, platformId, title, artist, album, duration, coverUrl, quality, meta}`
+        —— 在线歌曲。**先入库拿到整数 id，再记播放**。
+
+    ⚠️ 为什么在线歌曲必须先入库：最近播放与播放统计全挂在 `songs.id` 上
+    （见 library_service「在线歌曲入库」一节）。搜索结果的 id 是平台字符串，
+    不先入库就没有整数 id 可记 —— 这正是「最近播放里看不到在线歌曲」的根因。
+    入库是幂等的（同一首歌永远命中同一行），所以重复播放不会堆出多行。
+
+    返回入库后的歌曲行，前端据此把整数 id 写回当前播放对象（之后它就能进最近播放、
+    也能被收藏/加歌单）。
+    """
+    data = request.get_json(silent=True) or {}
+    song_id = data.get("songId")
+    song = None
+    if song_id is not None:
+        try:
+            song_id = int(song_id)
+        except (TypeError, ValueError):
+            song_id = None
+    if song_id is None:
+        source = str(data.get("source") or "").strip()
+        platform_id = str(data.get("platformId") or "").strip()
+        if not source or not platform_id:
+            return fail("songId or (source + platformId) required", 400)
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        song = library_service.upsert_online_song(
+            source,
+            platform_id,
+            title=str(data.get("title") or ""),
+            artist=str(data.get("artist") or ""),
+            album=str(data.get("album") or ""),
+            duration=data.get("duration") or 0,
+            cover_url=str(data.get("coverUrl") or ""),
+            quality=str(data.get("quality") or ""),
+            meta=meta,
+        )
+        if song is None:
+            return fail("register online song failed", 400)
+        song_id = song["id"]
+    else:
+        song = library_service.get_song(song_id)
+    library_service.record_play(song_id)
+    return ok(song or {"id": song_id})
+
+
 @bp.get("/playback/history")
 def playback_history():
     """获取最近播放历史（默认 100 条）。"""
