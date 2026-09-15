@@ -657,6 +657,7 @@ def download():
         if cover:
             metadata_parser.write_cover(dest, cover)
 
+        platform_id = str(data.get("platformId") or "")
         song = library_service.register_file(
             dest,
             {
@@ -667,13 +668,20 @@ def download():
                 "cover": cover or None,
                 "lyrics": lrc_text,
                 # 记下在线来源：既便于日后追溯，也让搜索页能标「已下载」
-                "source_path": library_service.online_path(source, str(data.get("platformId") or "")),
+                "source_path": library_service.online_path(source, platform_id),
             },
+            # ⚠️ 带上在线身份：若这首歌已在曲库里占了一行（在线行），要**就地转成本地行**，
+            # 而不是另插一行 —— 否则「全部音乐」里会出现两份，且下载前后的收藏/歌单对不上。
+            online_source=source,
+            online_id=platform_id,
+            song_id=data.get("songId"),
         )
         if song is None:
             raise RuntimeError("登记入库失败")
 
-        # 3) 把首选音质记到在线记录上（下次播放 / 再次下载直接用它）
+        # 3) 把首选音质记到在线记录上（下次播放 / 再次下载直接用它）。
+        #    注意：下载后那一行已经是本地行，set_online_quality 会拒绝（它只认在线行）——
+        #    此时音质偏好已无意义，跳过即可。
         if data.get("songId") is not None:
             try:
                 library_service.set_online_quality(int(data["songId"]), quality)

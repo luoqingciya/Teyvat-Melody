@@ -143,6 +143,55 @@ def _migrate(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # 合并历史遗留的重复行（见函数注释）。放在最后：依赖上面的唯一索引与各列已就位。
+    try:
+        _merge_downloaded_online_duplicates(conn)
+    except sqlite3.Error:
+        # 迁移失败不该阻塞启动：下一次启动会再试一次（本函数幂等）
+        pass
+
+
+def _merge_downloaded_online_duplicates(conn: sqlite3.Connection) -> None:
+    """把「已下载的本地行」与「同一首歌的在线行」合并成一行（幂等）。
+
+    ⚠️ 为什么需要：v1.0.13 之前，下载会在 songs 表**另插一行**本地记录，而原来的
+    在线行仍然留着 —— 于是「全部音乐」里同一首歌出现两份（一份仅本地、一份仅在线），
+    而且用户在下载**前**收藏的那一份与下载**后**的文件不是同一条记录。
+
+    新版下载已改为**就地转成本地行**，不会再产生重复；但**旧库里已经存在的重复必须迁移掉**，
+    否则升级后照旧看到两份。这里保留**本地行**（它指向真实文件），把在线行上的
+    收藏 / 歌单归属 / 播放历史全部搬到本地行，再删掉在线行。
+
+    ⚠️ 顺序不能颠倒：`playlist_songs` 与 `playback_history` 对 songs 都是
+    `ON DELETE CASCADE`，先删在线行会把歌单归属与播放历史一起带走。
+    """
+    # 用位置下标而不是列名：init_db() 建立的连接没有设 row_factory，取不到列名
+    dupes = conn.execute(
+        "SELECT l.id, o.id, o.favorite "
+        "FROM songs l JOIN songs o "
+        "  ON o.online_source <> '' "
+        " AND l.source_path = 'online://' || o.online_source || '/' || o.online_id "
+        "WHERE l.id <> o.id AND l.online_source = ''"
+    ).fetchall()
+    for local_id, online_id, online_fav in dupes:
+        # 收藏：任一边收藏过就算收藏（用户的意图不该因为下载而消失）
+        if online_fav:
+            conn.execute("UPDATE songs SET favorite = 1 WHERE id = ?", (local_id,))
+        # 歌单归属：搬过去。PK 是 (playlist_id, song_id)，同一歌单两边都在时会冲突，
+        # 故用 OR IGNORE，随后把没搬过去的残余删掉。
+        conn.execute(
+            "UPDATE OR IGNORE playlist_songs SET song_id = ? WHERE song_id = ?",
+            (local_id, online_id),
+        )
+        conn.execute("DELETE FROM playlist_songs WHERE song_id = ?", (online_id,))
+        # 播放历史：直接改指本地行（该表无唯一约束，不会冲突）
+        conn.execute(
+            "UPDATE playback_history SET song_id = ? WHERE song_id = ?", (local_id, online_id)
+        )
+        conn.execute("DELETE FROM songs WHERE id = ?", (online_id,))
+    if dupes:
+        conn.commit()
+
 
 def get_conn() -> sqlite3.Connection:
     """返回一个 row_factory=Row 的连接，调用方负责 commit/close。"""

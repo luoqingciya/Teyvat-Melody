@@ -242,8 +242,37 @@ def online_path(source: str, platform_id: str) -> str:
 
     形如 `online://kw/MUSIC_123`：不会被当成真实路径使用（播放走源解析 + 同源代理），
     但足以保证同一首歌重复入库时命中同一行。
+
+    下载后这串值会被搬到 `source_path` 上，作为「这首歌来自哪个平台」的凭证 ——
+    在线搜索页的「已下载」标记就是靠它认的。
     """
     return f"online://{source}/{platform_id}"
+
+
+def _find_row_by_online_identity(source: str, platform_id: str, conn=None) -> Optional[int]:
+    """按「在线身份」找行 id：**先在线的，再已下载的**。
+
+    ⚠️ 为什么要认已下载的那一份：下载会把在线行**就地**转成本地行（`online_source`
+    清空、`path` 指向文件）。但那首歌的身份没变，若只按 `online_source`/`online_id` 找，
+    之后再次收藏 / 加入歌单时就会另插一行 —— 重复问题原样复发。
+    所以还要认 `source_path = online://平台/平台ID` 这一份。
+
+    两行同时存在时优先返回在线行（正常流程下不会出现，纯属防御）。
+    """
+    src = (source or "").strip()
+    pid = str(platform_id or "").strip()
+    if not src or not pid:
+        return None
+    sql = (
+        "SELECT id FROM songs WHERE (online_source = ? AND online_id = ?) OR source_path = ? "
+        "ORDER BY (online_source <> '') DESC LIMIT 1"
+    )
+    params = (src, pid, online_path(src, pid))
+    if conn is not None:
+        row = conn.execute(sql, params).fetchone()
+    else:
+        row = db.fetch_one(sql, params)
+    return int(row["id"]) if row else None
 
 
 def upsert_online_song(
@@ -276,27 +305,23 @@ def upsert_online_song(
             meta_json = json.dumps(meta, ensure_ascii=False)
         except (TypeError, ValueError):
             meta_json = None
-    row = db.fetch_one(
-        "SELECT id FROM songs WHERE online_source = ? AND online_id = ?", (source, platform_id)
-    )
-    if row:
+    row_id = _find_row_by_online_identity(source, platform_id)
+    if row_id:
+        # 已下载的歌在这一步会命中「本地那一行」：只刷新元信息，**不把它改回在线行** ——
+        # 它现在有真实文件，播放该走本地；改回在线会让它变成流式播放且重新出现在在线列表里。
         db.execute(
             "UPDATE songs SET title = ?, artist = ?, album = ?, duration = ?, "
             "cover_url = COALESCE(NULLIF(?, ''), cover_url), "
-            "online_meta = COALESCE(?, online_meta), "
-            "online_quality = COALESCE(NULLIF(?, ''), online_quality) WHERE id = ?",
-            (
-                title or "",
-                artist or "",
-                album or "",
-                float(duration or 0),
-                cover_url or "",
-                meta_json,
-                quality or "",
-                row["id"],
-            ),
+            "online_meta = COALESCE(?, online_meta) WHERE id = ?",
+            (title or "", artist or "", album or "", float(duration or 0), cover_url or "", meta_json, row_id),
         )
-        return get_song(row["id"])
+        if _is_online(row_id):
+            # 音质偏好只对在线行有意义；本地行没有「在线音质」这回事
+            db.execute(
+                "UPDATE songs SET online_quality = COALESCE(NULLIF(?, ''), online_quality) WHERE id = ?",
+                (quality or "", row_id),
+            )
+        return get_song(row_id)
     new_id = db.execute(
         "INSERT INTO songs(path, title, artist, album, duration, "
         "online_source, online_id, online_quality, cover_url, online_meta) "
@@ -370,12 +395,32 @@ def downloaded_keys() -> list[str]:
     return out
 
 
-def register_file(stored: Path, overrides: Optional[dict] = None) -> Optional[dict]:
+def register_file(
+    stored: Path,
+    overrides: Optional[dict] = None,
+    *,
+    online_source: str = "",
+    online_id: str = "",
+    song_id: Optional[int] = None,
+) -> Optional[dict]:
     """把**已在磁盘上**的音频文件登记入库（在线下载完成后调用）。
 
     与扫描入库的区别：不做复制、不遍历目录，只解析这一个文件并 upsert。
     显式传入的 overrides（标题 / 艺术家 / 专辑 / 时长 / 封面字节 / 歌词 / source_path）
     优先于文件内嵌标签 —— 第三方 CDN 下回来的文件常常没有标签，靠在线元数据补齐才有意义。
+
+    ⚠️⚠️ **下载的若是已入库的在线歌曲，必须「就地转成同一行」，不能另插一行。**
+    在线歌曲在 songs 表里已经占了一行，收藏 / 歌单 / 最近播放 / 播放统计全挂在那个 id 上。
+    另插一行本地记录会同时造成两个问题：
+
+      1. 同一首歌出现两行 →「全部音乐」里两份（一份仅本地、一份仅在线）；
+      2. 用户下载**前**收藏的那一份，与下载**后**的文件不是同一条记录 ——
+         收藏、歌单、播放次数全部对不上。
+
+    所以这里先按 `song_id`（前端传回的已入库在线行）或在线身份找到那一行，找到就改成本地行：
+    清空 `online_source`/`online_id`（于是 `decorateSong` 视其为本地、播放直连本地文件、
+    也不再出现在「在线」筛选里），保留 `id` 与 `favorite`，并把 `online://…` 挪到
+    `source_path` 作为来源凭证（搜索页的「已下载」标记靠它）。
     """
     stored = Path(stored)
     if not stored.is_file():
@@ -386,8 +431,58 @@ def register_file(stored: Path, overrides: Optional[dict] = None) -> Optional[di
     if ov.get("cover"):
         cover = ov["cover"]
     lyrics = ov["lyrics"] if ov.get("lyrics") is not None else meta.get("lyrics")
+
+    title = ov.get("title") or meta["title"] or stored.stem
+    artist = (ov.get("artist") if ov.get("artist") is not None else meta["artist"]) or ""
+    album = (ov.get("album") if ov.get("album") is not None else meta["album"]) or ""
+    duration = float(ov.get("duration") or meta["duration"] or 0)
+    source_path = ov.get("source_path") or online_path(online_source, online_id) or None
+
     conn = db.get_conn()
     try:
+        target = None
+        if song_id is not None:
+            try:
+                row = conn.execute(
+                    "SELECT id FROM songs WHERE id = ? AND online_source <> ''", (int(song_id),)
+                ).fetchone()
+            except (TypeError, ValueError):
+                row = None
+            if row:
+                target = int(row["id"])
+        if target is None and online_source and online_id:
+            target = _find_row_by_online_identity(online_source, online_id, conn=conn)
+
+        if target is not None:
+            conn.execute(
+                "UPDATE songs SET path = ?, title = ?, artist = ?, album = ?, duration = ?, "
+                "cover = COALESCE(?, cover), lyrics = COALESCE(?, lyrics), "
+                "sample_rate = ?, bitrate = ?, channels = ?, format = ?, "
+                "source_path = COALESCE(?, source_path), "
+                "online_source = '', online_id = NULL, online_quality = NULL "
+                "WHERE id = ?",
+                (
+                    str(stored),
+                    title,
+                    artist,
+                    album,
+                    duration,
+                    cover,
+                    lyrics,
+                    meta.get("sample_rate", 0),
+                    meta.get("bitrate", 0),
+                    meta.get("channels", 0),
+                    meta.get("format", ""),
+                    source_path,
+                    target,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                f"SELECT {db.SONG_COLS} FROM songs WHERE id = ?", (target,)
+            ).fetchone()
+            return dict(row) if row else None
+
         conn.execute(
             "INSERT INTO songs(path, title, artist, album, duration, cover, lyrics, "
             "sample_rate, bitrate, channels, format, source_path) "
@@ -402,17 +497,17 @@ def register_file(stored: Path, overrides: Optional[dict] = None) -> Optional[di
             "source_path=COALESCE(excluded.source_path, songs.source_path)",
             (
                 str(stored),
-                (ov.get("title") or meta["title"] or stored.stem),
-                (ov.get("artist") if ov.get("artist") is not None else meta["artist"]) or "",
-                (ov.get("album") if ov.get("album") is not None else meta["album"]) or "",
-                float(ov.get("duration") or meta["duration"] or 0),
+                title,
+                artist,
+                album,
+                duration,
                 cover,
                 lyrics,
                 meta.get("sample_rate", 0),
                 meta.get("bitrate", 0),
                 meta.get("channels", 0),
                 meta.get("format", ""),
-                ov.get("source_path"),
+                source_path,
             ),
         )
         conn.commit()

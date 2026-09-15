@@ -459,7 +459,31 @@ def main() -> int:
     }
     r40 = client.post("/api/online/download", json=dl_payload)
     dl_song = r40.get_json()["data"]
-    ok("下载：返回登记后的本地歌曲", r40.status_code == 200 and dl_song and dl_song["id"] != sid, json.dumps(r40.get_json())[:200])
+    # ⚠️⚠️ 关键不变量：下载必须**就地**把那一行在线记录转成本地行，而不是另插一行。
+    # 另插一行会让「全部音乐」里出现两份（一份仅本地、一份仅在线），
+    # 而且下载**前**收藏的那一份与下载**后**的文件不是同一条记录 —— 收藏/歌单/统计全对不上。
+    ok(
+        "下载：就地转成本地歌曲（沿用同一行 id，不新插一行）",
+        r40.status_code == 200 and dl_song and dl_song["id"] == sid,
+        json.dumps(r40.get_json())[:200],
+    )
+    _local_same = [s for s in client.get("/api/songs").get_json()["data"] if s["title"] == "测试歌曲"]
+    _online_same = [s for s in client.get("/api/online/library").get_json()["data"] if s["title"] == "测试歌曲"]
+    ok(
+        "⚠️ 下载后「测试歌曲」在本地库只有一份、在线库已不含它（不再两份）",
+        len(_local_same) == 1 and len(_online_same) == 0,
+        f"本地 {len(_local_same)} 份 / 在线 {len(_online_same)} 份",
+    )
+    ok(
+        "下载：收藏状态延续（下载前收藏的就是它）",
+        sid in [s["id"] for s in client.get("/api/favorites").get_json()["data"]],
+        json.dumps(client.get("/api/favorites").get_json())[:200],
+    )
+    ok(
+        "下载：歌单归属延续到本地行",
+        any(s["id"] == sid for s in client.get(f"/api/playlists/{pl_id}/songs").get_json()["data"]),
+        json.dumps(client.get(f"/api/playlists/{pl_id}/songs").get_json())[:200],
+    )
     ok("下载：本地歌曲不带在线标记", dl_song["online_source"] == "", json.dumps(dl_song))
     ok("下载：元数据取自在线信息（而非文件名）", dl_song["title"] == "测试歌曲" and dl_song["artist"] == "测试歌手", json.dumps(dl_song))
     ok("下载：封面已入库", bool(dl_song["has_cover"]), json.dumps(dl_song))
@@ -543,9 +567,27 @@ def main() -> int:
         client.post("/api/online/download", json={"url": "file:///etc/passwd"}).status_code == 400,
     )
 
-    # 移出曲库：只影响在线记录，已下载的本地文件不受影响
-    r43 = client.delete(f"/api/online/songs/{sid}")
-    ok("移出：在线记录已删除", r43.status_code == 200 and all(s["id"] != sid for s in client.get("/api/online/library").get_json()["data"]))
+    # 移出曲库：只影响**在线**记录。
+    # ⚠️ 上面那首已经下载并就地转成本地行了，不再是「在线记录」，所以另起一首未下载的来验。
+    r_new = client.post(
+        "/api/online/register",
+        json={"source": "kg", "platformId": "HASH_REMOVE", "title": "待移出", "artist": "测试"},
+    )
+    rid = r_new.get_json()["data"]["id"]
+    r43 = client.delete(f"/api/online/songs/{rid}")
+    ok(
+        "移出：在线记录已删除",
+        r43.status_code == 200
+        and all(s["id"] != rid for s in client.get("/api/online/library").get_json()["data"]),
+        json.dumps(r43.get_json())[:200],
+    )
+    # 已下载转成本地的那首不该被这个接口删掉 —— 它现在是本地歌，删它是「删本地歌曲」的事
+    r44 = client.delete(f"/api/online/songs/{sid}")
+    ok(
+        "移出：已下载转本地的歌不受「移出在线」影响（接口只认在线行）",
+        r44.status_code == 404 and any(s["id"] == sid for s in client.get("/api/songs").get_json()["data"]),
+        f"{r44.status_code}",
+    )
     ok("移出：已下载的本地歌曲仍在", dl_song["id"] in [s["id"] for s in client.get("/api/songs").get_json()["data"]])
     ok("移出：本地歌曲不可用该接口删", client.delete(f"/api/online/songs/{dl_song['id']}").status_code == 404)
 
