@@ -202,6 +202,25 @@ const skip = (name, why) => {
     ok("搜索未报错", !state?.toastErr, state?.toastErr || state?.toast);
     if (!state?.rows) throw new Error("无结果，跳过播放验证");
 
+    // 候选行：**尚未下载**的搜索结果，后面所有「在线专属」的断言都用其中能播的那一行。
+    // ⚠️ 不能用「第一行」：开发库里往往已积累不少下载过的歌，而**已下载的歌在曲库里就是
+    //    本地行** —— 对它收藏不会新建在线记录，播放也直连本地文件。拿它验在线链路，
+    //    断言会全部落空（属于假失败，不是功能坏了）。判据用「下载按钮是否可用」。
+    const candidateIdxs = await cdp.eval(`(() => {
+      const rows = [...document.querySelectorAll('.online-row')];
+      return rows
+        .map((r, i) => {
+          const b = r.querySelectorAll('.op-btn')[4];
+          return { i, can: !!(b && !b.disabled) };
+        })
+        .filter((x) => x.can)
+        .map((x) => x.i)
+        .slice(0, 5);
+    })()`);
+    console.log("  未下载的候选行:", JSON.stringify(candidateIdxs));
+    // 在「能播的那一行」确定后才赋值（源对个别歌解析不了，要逐条试）
+    let TARGET = `document.querySelectorAll('.online-row')[${candidateIdxs[0] ?? 0}]`;
+
     // 5b) 翻页：列表末尾应有「下一页」按钮，点它要**追加**更多结果。
     //     没有翻页时用户只能看到每页固定那几十条，会以为「只能搜到这些」。
     const pageBefore = await cdp.eval(`(() => {
@@ -340,38 +359,59 @@ const skip = (name, why) => {
       })()`);
     }
 
-    // 6) 点第一条播放：验证在线播放链路（online:getUrl + 同源代理取流）
+    // 6) 点一条未下载的结果播放：验证在线播放链路（online:getUrl + 同源代理取流）
     //    判定要严：不能只看「行变高亮」——那只能说明 playQueue 被调用了，
     //    真正的失败（源解析不出地址）会晚几秒才以 toast 出现，且时长始终为 00:00。
-    await cdp.eval("document.querySelector('.online-row').click()");
+    //    ⚠️ 必须**逐条换源重试**：第三方源对哪些歌能解析是波动的，只赌一条会误报红。
     let play = null;
-    for (let i = 0; i < 40; i++) {
-      play = await cdp.eval(`(() => {
-        const row = document.querySelector('.online-row--active');
-        // 控制条里两个 .time-display：前者当前时间，后者总时长
-        const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
-        const host = document.querySelector('.tm-toast-host');
-        const err = document.querySelector('.tm-toast--error');
-        return {
-          active: !!row,
-          activeText: row ? row.innerText.replace(/\\s+/g, ' ').trim().slice(0, 60) : null,
-          current: times[0] || null,
-          duration: times[1] || null,
-          toast: host ? host.textContent.replace(/\\s+/g, ' ').trim() : '',
-          toastErr: err ? err.textContent.replace(/\\s+/g, ' ').trim() : '',
-        };
-      })()`);
-      if (play.toastErr) break; // 已报错，不必再等
-      const gotMeta = play.duration && play.duration !== "00:00" && play.duration !== "--:--";
-      const advancing = play.current && play.current !== "00:00";
-      if (gotMeta && advancing) break;
-      await sleep(500);
+    let targetIdx = -1;
+    for (const idx of candidateIdxs) {
+      await cdp.eval(`document.querySelectorAll('.online-row')[${idx}].click()`);
+      for (let i = 0; i < 24; i++) {
+        play = await cdp.eval(`(() => {
+          const row = document.querySelector('.online-row--active');
+          // 控制条里两个 .time-display：前者当前时间，后者总时长
+          const times = [...document.querySelectorAll('.time-display')].map((e) => e.textContent.trim());
+          const host = document.querySelector('.tm-toast-host');
+          const err = document.querySelector('.tm-toast--error');
+          return {
+            active: !!row,
+            activeText: row ? row.innerText.replace(/\\s+/g, ' ').trim().slice(0, 60) : null,
+            current: times[0] || null,
+            duration: times[1] || null,
+            toast: host ? host.textContent.replace(/\\s+/g, ' ').trim() : '',
+            toastErr: err ? err.textContent.replace(/\\s+/g, ' ').trim() : '',
+          };
+        })()`);
+        if (play.toastErr) break; // 已报错，不必再等
+        const gotMeta = play.duration && play.duration !== "00:00" && play.duration !== "--:--";
+        const advancing = play.current && play.current !== "00:00";
+        if (gotMeta && advancing) break;
+        await sleep(500);
+      }
+      const playable =
+        play && !play.toastErr && play.duration && play.duration !== "00:00" && play.duration !== "--:--";
+      if (playable) {
+        targetIdx = idx;
+        break;
+      }
+      console.log(`  （第 ${idx} 行源解析不了，换下一行试播）`);
     }
+    if (targetIdx >= 0) TARGET = `document.querySelectorAll('.online-row')[${targetIdx}]`;
+    console.log(`  E2E 目标行: ${targetIdx >= 0 ? targetIdx : "无（源解析不了任何候选）"}`);
     console.log("  播放状态:", JSON.stringify(play));
     ok("点击结果后该行变为当前播放项", !!play?.active, "未出现 .online-row--active");
-    ok("播放未报错（源解析 + 代理取流成功）", !play?.toastErr, play?.toastErr || play?.toast);
-    ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
-    ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
+    if (targetIdx < 0) {
+      // 候选行全被源拒了（`音质降级全部失败 → unknow error`）。这是**第三方源的波动**，
+      // 不是本项目的功能回归 —— 与「下载链路」用 SKIP 的理由相同（见上方注释）。
+      skip("在线播放链路（源解析 + 代理取流）", `候选行都解析不了：${candidateIdxs.join(",")}`);
+      skip("已取得音频时长", "同上");
+      skip("进度已推进", "同上");
+    } else {
+      ok("播放未报错（源解析 + 代理取流成功）", !play?.toastErr, play?.toastErr || play?.toast);
+      ok("已取得音频时长（说明流已接通）", !!play?.duration && play.duration !== "00:00" && play.duration !== "--:--", `duration=${play?.duration}`);
+      ok("进度已推进（说明确实在播放）", !!play?.current && play.current !== "00:00", `current=${play?.current}`);
+    }
 
     // 6b) 播一个「源可能播不了」的平台：失败时应在筛选条上留下警示。
     //     ⚠️ 不要假定某个平台一定失败 —— 源后端对平台的支持会变
@@ -433,11 +473,11 @@ const skip = (name, why) => {
     //     这四项都要跨「渲染进程 → 主进程 → Flask → SQLite」多道边界，
     //     单元测试里都是打桩，只有真实界面点一遍才能确认真的通了。
     //     先把第一条设为当前播放项（6b 点过网易云，当前播放项可能已经不是它）。
-    await cdp.eval("document.querySelector('.online-row').click()");
+    await cdp.eval(`${TARGET}.click()`);
     await sleep(3000);
 
     const menuState = await cdp.eval(`(async () => {
-      const row = document.querySelector('.online-row');
+      const row = ${TARGET};
       row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
       await new Promise((r) => setTimeout(r, 250));
       const menu = document.querySelector('.song-ctx');
@@ -461,10 +501,10 @@ const skip = (name, why) => {
     await sleep(200);
 
     const favState = await cdp.eval(`(async () => {
-      const row = document.querySelector('.online-row');
+      const row = ${TARGET};
       if (!row) return { err: 'no-row' };
 
-      // 点的是「搜索结果第一行的爱心」。难点在于：**怎么知道这一行对应库里哪条记录**。
+      // 点的是「目标行的爱心」。难点在于：**怎么知道这一行对应库里哪条记录**。
       // ⚠️ 不要用标题去反查。实测踩到：曲库里同时存在「晴天」「晴天 (KTV版伴奏)」等多首近名歌，
       //    而行的 .col-title 里还夹着「已下载」徽标文字，includes 双向匹配会命中**另一首**；
       //    于是点击确实生效了（收藏集合真的变了），观测的那首却没变 → 断言随机失败。
@@ -478,9 +518,10 @@ const skip = (name, why) => {
       btns[3].click(); // 收藏（切换语义）
       await new Promise((r) => setTimeout(r, 3000));
 
-      const [lib2, favsAfter] = await Promise.all([
+      const [lib2, favsAfter, local2] = await Promise.all([
         fetch('/api/online/library').then((r) => r.json()),
         fetch('/api/favorites').then((r) => r.json()),
+        fetch('/api/songs').then((r) => r.json()),
       ]);
       const afterIds = favIdsOf(favsAfter);
       const added = afterIds.filter((id) => !beforeIds.includes(id));
@@ -488,9 +529,14 @@ const skip = (name, why) => {
       const toggledId = added.length ? added[0] : removed.length ? removed[0] : null;
       const toggled = (lib2.data || []).find((s) => s.id === toggledId) || null;
 
-      // 不变量：收藏列表里的每一条都必须存在于在线曲库（收藏不会指向不存在的歌）。
-      const listIds = (lib2.data || []).map((s) => s.id);
-      const listConsistent = afterIds.every((id) => listIds.includes(id));
+      // 不变量：收藏列表里的每一条都必须存在于曲库 —— **本地或在线都算**。
+      // ⚠️ 不能只对照「在线曲库」：收藏里本来就可能含本地歌曲（用户给本地歌点收藏），
+      //    而且**下载过的在线歌在曲库里是本地行**，更不会出现在在线曲库里。
+      const knownIds = new Set([
+        ...(lib2.data || []).map((s) => s.id),
+        ...(local2.data || []).map((s) => s.id),
+      ]);
+      const listConsistent = afterIds.every((id) => knownIds.has(id));
       return {
         lib: (lib2.data || []).length,
         favCount: afterIds.length,
@@ -627,10 +673,20 @@ const skip = (name, why) => {
     console.log("  全部音乐:", JSON.stringify(allView));
     ok("「全部音乐」有来源筛选条（全部 / 仅本地 / 仅在线）", (allView?.labels || []).length === 3, JSON.stringify(allView?.labels));
     ok("「全部音乐」有来源列", allView?.hasSourceCol === true);
+    // ⚠️ 不要用「滚到底后数在线行」来验这一条：列表是虚拟滚动的，滚动后渲染窗口的更新
+    //    与读取之间有时序差，末尾那一行常常还没被渲染出来 —— 会得到 0 的**假失败**。
+    //    改用筛选条上的计数：「全部 = 仅本地 + 仅在线」既精确又与滚动位置无关。
     ok(
       "「全部音乐」列出了在线歌曲（本地+在线混排）",
-      allView?.allOnline > 0 && allView?.allCount > (allView?.localOnly?.count ?? 0),
-      `滚到底后在线行数=${allView?.allOnline} / 全部=${allView?.allCount} / 仅本地=${allView?.localOnly?.count}`
+      (allView?.onlineOnly?.count ?? 0) > 0 &&
+        allView?.allCount === (allView?.localOnly?.count ?? 0) + (allView?.onlineOnly?.count ?? 0),
+      `全部=${allView?.allCount} / 仅本地=${allView?.localOnly?.count} / 仅在线=${allView?.onlineOnly?.count}`
+    );
+    // 该在线歌曲在「仅在线」筛选下确实被渲染出来了（带平台徽标）
+    ok(
+      "「仅在线」筛选下在线歌曲真的渲染出来（带来源徽标）",
+      (allView?.onlineOnly?.onlineRows ?? 0) > 0,
+      JSON.stringify(allView?.onlineOnly)
     );
     // 来源列的口径用两个筛选态分别验证（「全部」里本地/在线分居首尾，虚拟滚动看不到全貌）
     ok(
@@ -773,7 +829,7 @@ const skip = (name, why) => {
     const plName = `在线E2E歌单-${Date.now()}`;
     const plState = await cdp.eval(`(async () => {
       const NAME = ${JSON.stringify(plName)};
-      const row = document.querySelector('.online-row');
+      const row = ${TARGET};
       row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
       await new Promise((r) => setTimeout(r, 250));
       const add = [...document.querySelectorAll('.song-ctx__item')].find((b) => /加入歌单/.test(b.textContent));
@@ -808,7 +864,7 @@ const skip = (name, why) => {
 
     // 换音质：点音质 chip 后应重新解析地址并从原位置续播（不是从 00:00 重来）
     const qState = await cdp.eval(`(async () => {
-      const row = document.querySelector('.online-row--active') || document.querySelector('.online-row');
+      const row = document.querySelector('.online-row--active') || ${TARGET};
       const before = document.querySelector('.pc-btn--quality') ? document.querySelector('.pc-btn--quality').textContent.trim() : null;
       const beforeTime = [...document.querySelectorAll('.time-display')][0]?.textContent.trim();
       row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 }));
@@ -832,14 +888,22 @@ const skip = (name, why) => {
       };
     })()`);
     console.log("  换音质结果:", JSON.stringify(qState));
-    ok("控制条显示在线音质徽标", !!qState?.before, JSON.stringify(qState));
-    ok("切换音质未报错", !qState?.toast, qState?.toast);
-    ok("切换后仍有有效音质（重新解析成功）", !!qState?.after && qState.after !== "…", JSON.stringify(qState));
-    ok(
-      "切换后未从头播放（进度被保留）",
-      !!qState?.current && qState.current !== "00:00",
-      `before=${qState?.beforeTime} after=${qState?.current}`
-    );
+    if (targetIdx < 0) {
+      // 上一步没能播起任何在线歌曲（源波动），换音质自然无从验证
+      skip("控制条显示在线音质徽标", "上一步未播起在线歌曲");
+      skip("切换音质未报错", "同上");
+      skip("切换后仍有有效音质", "同上");
+      skip("切换后未从头播放（进度被保留）", "同上");
+    } else {
+      ok("控制条显示在线音质徽标", !!qState?.before, JSON.stringify(qState));
+      ok("切换音质未报错", !qState?.toast, qState?.toast);
+      ok("切换后仍有有效音质（重新解析成功）", !!qState?.after && qState.after !== "…", JSON.stringify(qState));
+      ok(
+        "切换后未从头播放（进度被保留）",
+        !!qState?.current && qState.current !== "00:00",
+        `before=${qState?.beforeTime} after=${qState?.current}`
+      );
+    }
 
     // 下载到本地曲库：走「选音质 → 主进程解析地址 → 后端取流落盘 → 登记为本地歌曲」全链路。
     // 挑一条**还没下载过**的结果（已下载的按钮是禁用的，点它只会空转）——
