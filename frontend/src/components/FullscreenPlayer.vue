@@ -22,8 +22,10 @@
             <h2 class="fs-title">{{ player.currentSong?.title || t("player.nowPlaying") }}</h2>
             <span class="fs-artist">{{ player.currentSong?.artist || t("player.selectSong") }}</span>
             <span class="fs-meta">
-              {{ qualityLabel(player.currentSong) }}
-              <span class="fs-meta__dot">·</span>
+              <template v-if="qualityLabel(player.currentSong)">
+                {{ qualityLabel(player.currentSong) }}
+                <span class="fs-meta__dot">·</span>
+              </template>
               {{ formatDuration(player.progress) }} / {{ formatDuration(player.duration) }}
             </span>
           </div>
@@ -55,6 +57,7 @@ import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
 import { useI18n } from "@/utils/i18n";
 import { songCoverUrl } from "@/utils/songCover";
+import { qualityLabel as onlineQualityText } from "@/utils/onlineSong";
 
 const player = usePlayerStore();
 const config = useConfigStore();
@@ -80,6 +83,10 @@ function formatDuration(sec) {
 
 function qualityLabel(song) {
   if (!song) return "";
+  // 在线歌曲没有本地编码信息（format/bitrate/sample_rate 都是空的），
+  // 它有的是源声明的音质标识 —— 早先这里只按本地字段拼，在线歌一律返回空串，
+  // 结果页面上只剩一个孤零零的分隔点（「· / 03:30」）。取法与 SongList 保持一致。
+  if (song.online) return song.quality ? onlineQualityText(song.quality) : "";
   const parts = [];
   if (song.format) parts.push(String(song.format).toUpperCase());
   if (song.bitrate) parts.push(`${Math.round(song.bitrate)}k`);
