@@ -23,7 +23,7 @@
           @click="activeTab = tab.key"
         >
           <AppIcon :name="tab.icon" :size="15" />
-          <span>{{ t(tab.label) }}</span>
+          <span class="settings__tab-label">{{ t(tab.label) }}</span>
           <!-- 有小红点的事项（如源加载失败）在标签上先提示，不用点进去才发现 -->
           <span v-if="tab.key === 'online' && sourceCount" class="settings__tab-badge">{{ sourceCount }}</span>
         </button>
@@ -468,6 +468,71 @@
           </div>
         </div>
 
+        <!-- ============ 网络设置（HTTP 代理） ============ -->
+        <!-- 单独一个分类：它不只影响在线播放 —— 检查更新、源脚本取数据全都走它 -->
+        <div v-show="activeTab === 'network'" class="settings__pane">
+          <!-- HTTP 代理：在线播放要连各平台接口与 CDN，被墙/需要代理时全靠这里 -->
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("settings.network") }}</h4>
+            <p class="settings__tip">{{ t("settings.proxyTip") }}</p>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.proxyEnable") }}</span>
+              <input v-model="proxy.enabled" class="settings__switch" type="checkbox" />
+            </label>
+
+            <!-- 主机与端口并排：端口只有 4~5 位，单独占一整行太空；挪在一起也顺带
+                 让人一眼看出「这两个是一组」 -->
+            <div class="settings__row settings__row--col">
+              <span>{{ t("settings.proxyAddr") }}</span>
+              <div class="settings__proxyaddr">
+                <input
+                  v-model.trim="proxy.host"
+                  class="ui-input settings__input settings__input--host"
+                  type="text"
+                  :disabled="!proxy.enabled"
+                  placeholder="127.0.0.1"
+                  spellcheck="false"
+                />
+                <span class="settings__proxycolon">:</span>
+                <input
+                  v-model.trim="proxy.port"
+                  class="ui-input settings__input settings__input--port"
+                  type="text"
+                  inputmode="numeric"
+                  :disabled="!proxy.enabled"
+                  placeholder="7890"
+                  spellcheck="false"
+                />
+              </div>
+            </div>
+
+            <div class="settings__row settings__row--end settings__actions">
+              <button
+                class="ui-btn ui-btn--ghost settings__action"
+                :disabled="!proxy.enabled || testing"
+                @click="onTestProxy"
+              >
+                {{ testing ? t("settings.proxyTesting") : t("settings.proxyTest") }}
+              </button>
+              <button
+                class="ui-btn settings__action"
+                :disabled="!proxyDirty"
+                @click="onSaveProxy"
+              >
+                {{ t("settings.proxySave") }}
+              </button>
+            </div>
+
+            <!-- 测试结果 / 保存反馈：成功绿色、失败红色（沿用 tip--err） -->
+            <span
+              v-if="proxyMsg"
+              class="settings__tip"
+              :class="{ 'settings__tip--err': proxyMsgErr, 'settings__tip--ok': !proxyMsgErr }"
+            >{{ proxyMsg }}</span>
+          </div>
+        </div>
+
         <!-- ============ 关于与更新 ============ -->
         <div v-show="activeTab === 'about'" class="settings__pane">
           <div class="settings__group">
@@ -596,6 +661,7 @@ const TABS = [
   { key: "appearance", label: "settings.tabAppearance", icon: "palette" },
   { key: "lyrics", label: "settings.tabLyrics", icon: "list-music" },
   { key: "online", label: "settings.tabOnline", icon: "cloud" },
+  { key: "network", label: "settings.tabNetwork", icon: "globe" },
   { key: "about", label: "settings.tabAbout", icon: "info" },
 ];
 // 记住上次停留的分类（弹窗关掉再开回到原处，不用每次重新点）
@@ -818,6 +884,84 @@ async function onClearCache() {
   }
 }
 
+// ---- HTTP 代理 ----
+// 配置由**主进程**持有（写在 <数据根>/cache/config.json，见 appConfig.js），
+// 不走 config store 的 localStorage —— 后端与源脚本也得读到它。
+const proxy = ref({ enabled: false, host: "", port: "" });
+const proxySaved = ref({ enabled: false, host: "", port: "" });
+const proxyMsg = ref("");
+const proxyMsgErr = ref(false);
+const testing = ref(false);
+let proxyMsgTimer = 0;
+
+/** 与已保存的值是否有差异 —— 决定「保存」按钮是否可点，避免无意义写入 */
+const proxyDirty = computed(
+  () =>
+    !!proxy.value.enabled !== !!proxySaved.value.enabled ||
+    String(proxy.value.host || "") !== String(proxySaved.value.host || "") ||
+    String(proxy.value.port || "") !== String(proxySaved.value.port || "")
+);
+
+function setProxyMsg(text, isErr = false) {
+  proxyMsg.value = text;
+  proxyMsgErr.value = !!isErr;
+  clearTimeout(proxyMsgTimer);
+  proxyMsgTimer = setTimeout(() => (proxyMsg.value = ""), 5000);
+}
+
+async function loadProxy() {
+  const api = window.pywebview?.api;
+  if (!api?.getProxy) return;
+  try {
+    const r = await api.getProxy();
+    if (r?.ok) {
+      const p = r.proxy || {};
+      proxy.value = { enabled: !!p.enabled, host: p.host || "", port: p.port ? String(p.port) : "" };
+      proxySaved.value = { ...proxy.value };
+    }
+  } catch {
+    /* 读不到就保持默认，不打扰用户 */
+  }
+}
+
+async function onSaveProxy() {
+  const api = window.pywebview?.api;
+  if (!api?.setProxy) return;
+  const r = await api.setProxy({
+    enabled: proxy.value.enabled,
+    host: proxy.value.host,
+    port: proxy.value.port,
+  });
+  if (!r?.ok) {
+    setProxyMsg(r?.message || t("settings.proxySaveFailed"), true);
+    return;
+  }
+  // 归一化后的值回填：端口可能被转成数字、前后空格被去掉，回填能让界面与真实配置一致
+  const p = r.proxy || {};
+  proxy.value = { enabled: !!p.enabled, host: p.host || "", port: p.port ? String(p.port) : "" };
+  proxySaved.value = { ...proxy.value };
+  setProxyMsg(
+    proxy.value.enabled
+      ? t("settings.proxySavedOn", { addr: `${proxy.value.host}:${proxy.value.port}` })
+      : t("settings.proxySavedOff")
+  );
+}
+
+async function onTestProxy() {
+  const api = window.pywebview?.api;
+  if (!api?.testProxy) return;
+  testing.value = true;
+  proxyMsg.value = "";
+  try {
+    const r = await api.testProxy({ host: proxy.value.host, port: proxy.value.port });
+    setProxyMsg(r?.message || (r?.ok ? t("settings.proxyOk") : t("settings.proxyFailed")), !r?.ok);
+  } catch (e) {
+    setProxyMsg(e.message, true);
+  } finally {
+    testing.value = false;
+  }
+}
+
 function flashSourceMsg(text, isErr) {
   sourceMsg.value = text;
   sourceMsgErr.value = !!isErr;
@@ -891,6 +1035,7 @@ watch(
       loadAppVersion();
       loadDataDir();
       loadCache();
+      loadProxy();
       clearInterval(cacheTimer);
       cacheTimer = setInterval(loadCache, 2000);
     } else {
@@ -940,6 +1085,16 @@ onUnmounted(() => clearInterval(cacheTimer));
   cursor: pointer;
   transition: background var(--t-fast), color var(--t-fast);
 }
+/* ⚠️ 标签文字「永不换行」。这一栏实测可用宽度只有 ~75px（127px 栏宽里减去
+   图标 15 + gap 8 + 左右内边距 24），而「在线播放」这类四字标签约 48px。
+   本身放得下，但**一旦带上右侧的数字徽标（17px）就会被挤到折行** —— 曾出现
+   「在线播放」独占两行、比其他标签高出一截，整列参差不齐。宁可省略也不折行。 */
+.settings__tab-label {
+  min-width: 0; /* 让 text-overflow 在 flex 子项上生效 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .settings__tab:hover {
   background: color-mix(in srgb, var(--teyvat-text-primary) 7%, transparent);
   color: var(--teyvat-text-primary);
@@ -952,6 +1107,7 @@ onUnmounted(() => clearInterval(cacheTimer));
 /* 数量徽标（当前只用于自定义源个数） */
 .settings__tab-badge {
   margin-left: auto;
+  flex-shrink: 0;
   min-width: 18px;
   padding: 0 5px;
   border-radius: var(--radius-full);
@@ -964,6 +1120,46 @@ onUnmounted(() => clearInterval(cacheTimer));
 }
 .settings__tab--on .settings__tab-badge {
   background: color-mix(in srgb, var(--teyvat-gold) 26%, transparent);
+}
+
+/* ---- 网络代理：主机与端口并排，中间一个冒号看起来像地址 ---- */
+.settings__proxyaddr {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.settings__proxycolon {
+  color: var(--teyvat-text-secondary);
+  font-size: 13px;
+}
+.settings__input {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--teyvat-card-border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--teyvat-text-primary);
+  font-size: 13px;
+  transition: border-color var(--t-fast);
+}
+.settings__input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--teyvat-gold) 60%, transparent);
+}
+.settings__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 主机要放 IP 或域名，给宽些；端口固定 5 位足够 */
+.settings__input--host {
+  width: 150px;
+}
+.settings__input--port {
+  width: 64px;
+}
+/* 成功提示（与 tip--err 相对） */
+.settings__tip--ok {
+  color: var(--teyvat-green, #4ade80);
 }
 
 /* ---- 内容区 ---- */
