@@ -901,6 +901,9 @@ ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
 const UPDATE_DIR = () => path.join(app.getPath("temp"), "TeyvatMelody-update");
 // 只允许从 GitHub 的发布域名下载，避免这段能力被当成任意下载器
 const UPDATE_URL_OK = /^https:\/\/(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)\//i;
+// 拉起安装向导后隔多久自动退出：留给渲染进程把「即将关闭」提示显示出来、
+// 以及让设置 / 播放进度正常落盘（退出走的是 app.quit()，会走 before-quit 收尾）。
+const QUIT_DELAY_MS = 1500;
 
 // 注：isInstalledBuild() / dataRoot() / installDir() 定义在文件开头 ——
 // 数据根目录的选址要用到「是否安装版」，而那必须在 app ready 之前完成。
@@ -979,12 +982,24 @@ ipcMain.handle("update:install", async (_e, { path: filePath, reveal }) => {
   const full = path.resolve(String(filePath || ""));
   if (full !== dir && !full.startsWith(dir + path.sep)) return { ok: false, message: "路径不被允许" };
   if (!fs.existsSync(full)) return { ok: false, message: "安装包不存在" };
-  if (reveal) {
+  const plan = updater.installAction(reveal);
+  if (plan.action === "reveal") {
     shell.showItemInFolder(full);
     return { ok: true, revealed: true };
   }
   const err = await shell.openPath(full);
-  return err ? { ok: false, message: err } : { ok: true };
+  if (err) return { ok: false, message: err };
+  // 安装程序要替换 TeyvatMelody.exe 与 resources/ 下的文件，而**当前进程正持有这些句柄** ——
+  // 不退出的话 NSIS 会卡在「文件被占用」或让用户手动关。这里主动退出。
+  // 延时是留给渲染进程把「即将关闭」提示显示出来，并让设置/播放进度正常落盘。
+  // 用 app.quit() 而非 app.exit()：前者会走 before-quit（杀后端、注销快捷键）。
+  if (plan.quitAfter) {
+    setTimeout(() => {
+      app.isQuiting = true;
+      app.quit();
+    }, QUIT_DELAY_MS);
+  }
+  return { ok: true, willQuit: plan.quitAfter };
 });
 
 // 用系统浏览器打开更新页 / 下载链接。

@@ -90,4 +90,21 @@ async function checkForUpdate(currentVersion, opts = {}) {
   }
 }
 
-module.exports = { checkForUpdate, isNewer, pickAssets, pickAssetFor, REPO, API_URL };
+/**
+ * 决定「拉起更新包」这一步该做什么 —— 纯函数，便于自检（main.js 依赖 Electron，测不了）。
+ *
+ * 两种分支完全不同，**绝不能混**：
+ *   · reveal=true（免安装版：下载的是 zip）→ 只在资源管理器里定位，用户自己解压。
+ *     此时应用**必须继续运行**，关掉反而让人莫名其妙。
+ *   · reveal=false（安装版：下载的是 Setup exe）→ 运行安装向导，然后**本应用要主动退出**：
+ *     安装程序要替换 TeyvatMelody.exe 与 resources/ 下的文件，而当前进程正持有这些句柄，
+ *     不退出的话 NSIS 会卡在「文件被占用」或要求用户手动关闭。
+ *
+ * @param {boolean} reveal 是否只定位不运行
+ * @returns {{action:"reveal"|"run", quitAfter:boolean}}
+ */
+function installAction(reveal) {
+  return reveal ? { action: "reveal", quitAfter: false } : { action: "run", quitAfter: true };
+}
+
+module.exports = { checkForUpdate, isNewer, pickAssets, pickAssetFor, installAction, REPO, API_URL };

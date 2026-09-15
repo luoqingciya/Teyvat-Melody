@@ -2,7 +2,7 @@
 //
 // 覆盖版本比较、下载项筛选、以及与 GitHub API 交互的三种结果（有新版 / 已最新 / 失败）。
 // 通过注入 fetchImpl 打桩，不依赖外网。
-const { checkForUpdate, isNewer, pickAssets, pickAssetFor } = require("../electron/updater");
+const { checkForUpdate, isNewer, pickAssets, pickAssetFor, installAction } = require("../electron/updater");
 
 const ok = (name, cond, extra) => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${!cond && extra ? "  → " + extra : ""}`);
@@ -86,6 +86,17 @@ const RELEASE = {
       fetchImpl: fakeFetch({ json: { ...RELEASE, body: "x".repeat(20000) } }),
     });
     ok("超长发布说明被截断", long.notes.length <= 6000, `len=${long.notes.length}`);
+
+    // ---- installAction：拉起更新包之后要不要退出应用 ----
+    // 安装版下拉起的是 Setup exe：装的时候要替换 exe 与 resources/，当前进程占着句柄会
+    // 让 NSIS 卡住/要求手动关，所以必须主动退出。
+    const runPlan = installAction(false);
+    ok("安装版：运行安装包", runPlan.action === "run", JSON.stringify(runPlan));
+    ok("安装版：运行后要退出应用（否则安装程序替换不了正在被占用的文件）", runPlan.quitAfter === true, JSON.stringify(runPlan));
+    // 免安装版只是定位 zip 让用户自己解压，这时候关掉应用反而莫名其妙。
+    const revealPlan = installAction(true);
+    ok("免安装版：只定位不运行", revealPlan.action === "reveal", JSON.stringify(revealPlan));
+    ok("免安装版：绝不退出应用", revealPlan.quitAfter === false, JSON.stringify(revealPlan));
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
     process.exitCode = 1;
