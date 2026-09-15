@@ -630,6 +630,72 @@ const ok = (name, cond, extra) => {
       `inlineTags=${allView?.inlineTags}`
     );
 
+    // 5f) 无障碍：列表行必须能用键盘操作。
+    //     此前整行是 div + @click，键盘用户既播不了歌、也调不出右键菜单。
+    //     这里走真实键盘事件路径验证（而不是只看有没有 tabindex 属性）。
+    const a11y = await cdp.eval(`(async () => {
+      const rows = () => [...document.querySelectorAll('.song-row')];
+      if (!rows().length) return { err: 'no-rows' };
+
+      const listbox = document.querySelector('.song-scroll');
+      const roleOk = listbox?.getAttribute('role') === 'listbox';
+      const rowRole = rows()[0].getAttribute('role');
+      const focusable = rows()[0].tabIndex === 0;
+
+      // 用 ↑/↓ 移动焦点：先聚焦第一行，再按 ArrowDown
+      const first = rows()[0];
+      first.focus();
+      const focusedFirst = document.activeElement === first;
+
+      first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      const afterDown = document.activeElement;
+      const movedDown = afterDown && afterDown.classList.contains('song-row') && afterDown !== first;
+
+      // End 跳到最后一行之前，先确认焦点仍可用 ↑ 回到上一行
+      afterDown?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      const movedUp = document.activeElement === first;
+
+      // 键盘唤起右键菜单（Shift+F10）：菜单应出现且焦点落在第一项
+      first.focus();
+      first.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      const menu = document.querySelector('.song-ctx');
+      const menuRole = menu?.getAttribute('role') || '';
+      const menuFocusedItem = !!document.activeElement?.closest('.song-ctx');
+
+      // 菜单内 ↓ 导航
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 100));
+      const menuMoved = !!document.activeElement?.closest('.song-ctx') && document.activeElement !== menu?.querySelector('button');
+
+      // Esc 关闭菜单，避免影响后续断言
+      const openBeforeEsc = !!document.querySelector('.song-ctx');
+      const focusBeforeEsc = document.activeElement?.className || '';
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise((r) => setTimeout(r, 350));
+      const openAfterEsc = !!document.querySelector('.song-ctx');
+
+      const focusedRowKey = first.getAttribute('tabindex');
+      return {
+        roleOk, rowRole, focusable, focusedFirst, movedDown, movedUp,
+        menuRole, menuFocusedItem, menuMoved, focusedRowKey,
+        openBeforeEsc, focusBeforeEsc, openAfterEsc,
+        menuClosed: !openAfterEsc,
+      };
+    })()`);
+    console.log("  行键盘无障碍:", JSON.stringify(a11y));
+    ok("列表容器有 listbox 语义", a11y?.roleOk === true);
+    ok("列表行有 option 语义且可聚焦", a11y?.rowRole === "option" && a11y?.focusable === true, JSON.stringify(a11y));
+    ok("列表行可以获得焦点", a11y?.focusedFirst === true);
+    ok("↓ 把焦点移到下一行", a11y?.movedDown === true, JSON.stringify(a11y));
+    ok("↑ 把焦点移回上一行", a11y?.movedUp === true, JSON.stringify(a11y));
+    ok("Shift+F10 能唤起右键菜单", a11y?.menuRole === "menu", JSON.stringify(a11y));
+    ok("菜单打开后焦点进入菜单项", a11y?.menuFocusedItem === true, JSON.stringify(a11y));
+    ok("菜单内 ↓ 可切换菜单项", a11y?.menuMoved === true, JSON.stringify(a11y));
+    ok("Esc 能关闭菜单", a11y?.menuClosed === true, JSON.stringify(a11y));
+
     // 回到在线搜索页，后续断言（加入歌单 / 换音质 / 下载）都在那一页
     await cdp.eval(`(async () => {
       document.querySelector('a[href="#/online"]').click();

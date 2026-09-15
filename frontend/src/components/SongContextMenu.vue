@@ -5,34 +5,37 @@
         v-if="visible"
         ref="rootEl"
         class="song-ctx"
+        role="menu"
+        :aria-label="song?.title || song?.name || ''"
         :style="{ left: px + 'px', top: py + 'px' }"
         @contextmenu.prevent
+        @keydown="onMenuKey"
       >
         <div class="song-ctx__title">
           <p class="song-ctx__name">{{ song?.title || song?.name || "" }}</p>
           <p class="song-ctx__artist">{{ song?.artist || song?.singer || t("online.unknownArtist") }}</p>
         </div>
 
-        <button class="song-ctx__item" @click="$emit('play')">
+        <button class="song-ctx__item" role="menuitem" @click="$emit('play')">
           <AppIcon :name="playing ? 'check' : 'play'" :size="15" />
           <span>{{ playing ? t("ctx.playing") : t("ctx.play") }}</span>
         </button>
-        <button class="song-ctx__item" @click="$emit('play-next')">
+        <button class="song-ctx__item" role="menuitem" @click="$emit('play-next')">
           <AppIcon name="list-music" :size="15" />
           <span>{{ t("ctx.playNext") }}</span>
         </button>
-        <button class="song-ctx__item" @click="$emit('add-queue')">
+        <button class="song-ctx__item" role="menuitem" @click="$emit('add-queue')">
           <AppIcon name="add-to" :size="15" />
           <span>{{ t("ctx.addQueue") }}</span>
         </button>
 
         <!-- 收藏与歌单对本地 / 在线一视同仁：在线歌曲会先自动入库拿到本地 id -->
         <div class="song-ctx__divider"></div>
-        <button class="song-ctx__item" @click="$emit('toggle-fav')">
+        <button class="song-ctx__item" role="menuitem" @click="$emit('toggle-fav')">
           <AppIcon :name="fav ? 'heart' : 'heart-outline'" :size="15" />
           <span>{{ fav ? t("ctx.unfavorite") : t("ctx.favorite") }}</span>
         </button>
-        <button class="song-ctx__item" @click="$emit('add-playlist')">
+        <button class="song-ctx__item" role="menuitem" @click="$emit('add-playlist')">
           <AppIcon name="list" :size="15" />
           <span>{{ t("playlist.addTo") }}</span>
         </button>
@@ -54,7 +57,7 @@
             </button>
           </div>
           <button
-            class="song-ctx__item"
+            class="song-ctx__item" role="menuitem"
             :disabled="downloaded || downloadPercent != null"
             @click="$emit('download')"
           >
@@ -74,11 +77,11 @@
         <!-- 本地歌曲专属：详情 / 编辑信息（在线歌曲没有本地文件可编辑） -->
         <template v-else>
           <div class="song-ctx__divider"></div>
-          <button class="song-ctx__item" @click="$emit('detail')">
+          <button class="song-ctx__item" role="menuitem" @click="$emit('detail')">
             <AppIcon name="info" :size="15" />
             <span>{{ t("ctx.detail") }}</span>
           </button>
-          <button class="song-ctx__item" @click="$emit('edit')">
+          <button class="song-ctx__item" role="menuitem" @click="$emit('edit')">
             <AppIcon name="edit" :size="15" />
             <span>{{ t("ctx.edit") }}</span>
           </button>
@@ -155,9 +158,44 @@ watch(
     const maxY = window.innerHeight - h - GAP;
     px.value = Math.min(Math.max(props.x, GAP), Math.max(GAP, maxX));
     py.value = Math.min(Math.max(props.y, GAP), Math.max(GAP, maxY));
+    // 键盘唤起菜单时把焦点送进第一项，否则焦点还在列表行上，
+    // ↑↓ 会被列表截走、菜单也按不了。
+    items()[0]?.focus();
   },
   { immediate: true }
 );
+
+/** 菜单内可操作的项（用于 ↑↓ 导航；chips 也算，它们是音质选项） */
+function items() {
+  if (!rootEl.value) return [];
+  return Array.from(rootEl.value.querySelectorAll("button:not([disabled])"));
+}
+
+/**
+ * 菜单内键盘导航（WAI-ARIA menu 的通行键位）。
+ * 原本只支持 Esc 关闭，方向键完全没处理 —— 键盘用户打开菜单后选不了任何一项。
+ *   · ↑ / ↓  在项间移动（到底部回到第一项，循环）
+ *   · Home/End 首尾
+ */
+function onMenuKey(e) {
+  const list = items();
+  if (!list.length) return;
+  const idx = list.indexOf(document.activeElement);
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    list[(idx + 1) % list.length]?.focus();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    list[(idx - 1 + list.length) % list.length]?.focus();
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    list[0].focus();
+  } else if (e.key === "End") {
+    e.preventDefault();
+    list[list.length - 1].focus();
+  }
+}
 
 // 点击外部 / 滚动 / Esc 关闭
 let detachTimer = null;
@@ -253,6 +291,12 @@ onBeforeUnmount(detachGlobalNow);
 }
 .song-ctx__item:hover:not(:disabled) {
   background: color-mix(in srgb, var(--teyvat-gold) 12%, transparent);
+  color: var(--teyvat-gold);
+}
+/* 键盘聚焦时与 hover 同样醒目（↑↓ 导航必须看得出"当前在哪一项"） */
+.song-ctx__item:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--teyvat-gold) 14%, transparent);
   color: var(--teyvat-gold);
 }
 .song-ctx__item:hover:not(:disabled) :deep(.app-icon) {

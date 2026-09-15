@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="app-modal">
-      <div v-if="modelValue" class="app-modal" role="dialog" aria-modal="true">
+      <div v-if="modelValue" ref="panelEl" class="app-modal" role="dialog" aria-modal="true" tabindex="-1" :aria-label="title || undefined">
         <div
           class="app-modal__mask"
           @click.self="maskClosable && $emit('update:modelValue', false)"
@@ -9,7 +9,7 @@
         <div class="app-modal__panel" :style="panelStyle">
           <div class="app-modal__head">
             <span v-if="title" class="app-modal__title ui-heading">{{ title }}</span>
-            <button class="app-modal__close ui-icon-btn" title="关闭" @click="$emit('update:modelValue', false)">
+            <button class="app-modal__close ui-icon-btn" title="关闭" aria-label="关闭" @click="$emit('update:modelValue', false)">
               <AppIcon name="x" :size="16" />
             </button>
           </div>
@@ -33,7 +33,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import AppIcon from "./AppIcon.vue";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -53,24 +54,75 @@ const panelStyle = computed(() => {
   return s;
 });
 
+const panelEl = ref(null);
+/** 打开前的焦点元素：关闭后要还回去，否则键盘用户会"丢失位置"（焦点掉到 body） */
+let lastFocused = null;
+
 function confirm() {
   emit("confirm");
 }
 
-// Esc 关闭：弹窗的通用预期行为，此前只有点遮罩和点 ✕ 两条路。
-// 只监听打开期间，且只在最外层生效（同一时刻只应有一个弹窗）。
+/** 可聚焦元素（用于初始聚焦与 Tab 循环） */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusables() {
+  if (!panelEl.value) return [];
+  return Array.from(panelEl.value.querySelectorAll(FOCUSABLE)).filter(
+    (el) => el.offsetParent !== null || el === document.activeElement,
+  );
+}
+
+/**
+ * 键盘可达性（此前只支持 Esc，焦点完全不管理）：
+ *   · 打开时把焦点移进弹窗 —— 否则焦点仍留在背后的页面上，
+ *     读屏用户根本不知道弹出了对话框、Tab 也会跑到背景里去；
+ *   · Tab / Shift+Tab 在弹窗内循环（焦点陷阱），不让焦点漏到背景；
+ *   · 关闭后把焦点还给打开它的那个元素。
+ */
 function onKey(e) {
   if (e.key === "Escape") {
     e.stopPropagation();
     emit("update:modelValue", false);
+    return;
+  }
+  if (e.key !== "Tab") return;
+
+  const items = focusables();
+  if (!items.length) {
+    // 弹窗里没有可聚焦元素：把焦点摁在弹窗容器上，别让它跑出去
+    e.preventDefault();
+    panelEl.value?.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === panelEl.value)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
   }
 }
 
 watch(
   () => props.modelValue,
-  (v) => {
-    if (v) window.addEventListener("keydown", onKey);
-    else window.removeEventListener("keydown", onKey);
+  async (v) => {
+    if (v) {
+      lastFocused = document.activeElement;
+      window.addEventListener("keydown", onKey);
+      await nextTick();
+      // 优先聚焦第一个可交互元素；没有则聚焦容器本身（配合 tabindex="-1"）
+      const items = focusables();
+      (items[0] || panelEl.value)?.focus();
+    } else {
+      window.removeEventListener("keydown", onKey);
+      // 焦点归还：元素可能已从 DOM 移除（如列表刷新），所以要判一下 isConnected
+      if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+      lastFocused = null;
+    }
   }
 );
 
@@ -85,6 +137,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   display: flex;
   align-items: center;
   justify-content: center;
+  outline: none; /* 容器本身是 tabindex="-1" 的聚焦落点，不需要视觉描边 */
 }
 .app-modal__mask {
   position: absolute;
