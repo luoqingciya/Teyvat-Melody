@@ -16,17 +16,32 @@
     </div>
   </header>
 
-  <SettingsModal v-model="showSettings" />
+  <SettingsModal v-model="showSettings" :initial-tab="settingsTab" />
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import SettingsModal from "./SettingsModal.vue";
 import { useI18n } from "@/utils/i18n";
 import { usePlayerStore } from "@/stores/player";
+import { useUiStore } from "@/stores/ui";
 
 const { t } = useI18n();
 const showSettings = ref(false);
+const ui = useUiStore();
+const settingsTab = ref("");
+
+// 空状态卡片等地方可以请求「打开设置并切到某个分类」（见 stores/ui.js）。
+// 这里消费意图：开弹窗 + 指定初始分类，然后清掉请求，避免下次打开被旧请求覆盖。
+watch(
+  () => ui.requestedSettingsTab,
+  (tab) => {
+    if (!tab) return;
+    settingsTab.value = tab;
+    showSettings.value = true;
+    ui.clearSettingsRequest();
+  },
+);
 
 // 手动窗口拖拽：绕开 -webkit-app-region: drag。
 // 背景：Chromium 在含 backdrop-filter 的窗口里会把 CSS 拖拽区错误映射到整窗并吞掉真实点击，

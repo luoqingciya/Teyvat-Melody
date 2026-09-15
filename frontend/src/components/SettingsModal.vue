@@ -25,7 +25,7 @@
           <AppIcon :name="tab.icon" :size="15" />
           <span>{{ t(tab.label) }}</span>
           <!-- 有小红点的事项（如源加载失败）在标签上先提示，不用点进去才发现 -->
-          <span v-if="tab.key === 'sources' && sourceCount" class="settings__tab-badge">{{ sourceCount }}</span>
+          <span v-if="tab.key === 'online' && sourceCount" class="settings__tab-badge">{{ sourceCount }}</span>
         </button>
       </nav>
 
@@ -573,7 +573,15 @@ import { registerFont, setAppFont } from "@/utils/fonts";
 import { useUpdater } from "@/composables/useUpdater";
 import { useApi } from "@/composables/useApi";
 
-const props = defineProps({ modelValue: { type: Boolean, default: false } });
+const props = defineProps({
+  modelValue: { type: Boolean, default: false },
+  /**
+   * 打开时先切到哪个分类（如空状态卡片引导用户去看「在线」）。
+   * 为空则沿用上次停留的分类。**只作用于"打开那一刻"** ——
+   * 用户手动切过之后不该被这个 prop 拽回去。
+   */
+  initialTab: { type: String, default: "" },
+});
 const emit = defineEmits(["update:modelValue"]);
 
 const config = useConfigStore();
@@ -875,6 +883,10 @@ watch(
   () => props.modelValue,
   (v) => {
     if (v) {
+      // 只在"打开这一刻"套用请求的分类，之后不再干预（否则用户手动切 tab 会被拽回来）
+      if (props.initialTab && TABS.some((x) => x.key === props.initialTab)) {
+        activeTab.value = props.initialTab;
+      }
       loadSources();
       loadAppVersion();
       loadDataDir();

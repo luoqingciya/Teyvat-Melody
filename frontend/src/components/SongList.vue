@@ -41,7 +41,7 @@
       <span class="col-duration">{{ t("song.colDuration") }}</span>
     </div>
 
-    <div ref="scrollEl" class="song-scroll" @scroll="onScroll">
+    <div ref="scrollEl" class="song-scroll" role="listbox" :aria-label="t('song.listLabel')" @scroll="onScroll">
       <div class="song-spacer" :style="{ height: totalHeight + 'px' }">
         <div
           v-for="(song, v) in visibleSongs"
@@ -49,8 +49,16 @@
           class="song-row row-grid"
           :style="{ transform: `translateY(${(startIndex + v) * ROW_HEIGHT}px)` }"
           :class="{ 'song-row--active': player.currentSong?.id === song.id }"
+          role="option"
+          tabindex="0"
+          :aria-selected="player.currentSong?.id === song.id"
+          :aria-label="`${song.title} - ${song.artist || ''}`"
           @click="playAt(startIndex + v)"
+          @keydown.enter.prevent="playAt(startIndex + v)"
+          @keydown.space.prevent="playAt(startIndex + v)"
+          @keydown="onRowKey($event, song)"
           @contextmenu.prevent="openContextMenu($event, song)"
+          @focus="onRowFocus(startIndex + v)"
         >
           <button
             class="col-fav fav-btn"
@@ -88,7 +96,15 @@
       </div>
     </div>
 
-    <div v-if="!total" class="song-table__empty">{{ emptyMessage }}</div>
+    <EmptyState
+      v-if="!total"
+      :title-key="emptyState.titleKey"
+      :desc-key="emptyState.descKey || ''"
+      :hint-key="emptyState.hintKey || ''"
+      :icon="emptyState.icon || 'music'"
+      :actions="emptyState.actions || []"
+      @action="onEmptyAction"
+    />
 
     <SongContextMenu
       :visible="ctx.visible"
@@ -138,6 +154,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import GlassCard from "./GlassCard.vue";
+import EmptyState from "./EmptyState.vue";
 import SongContextMenu from "./SongContextMenu.vue";
 import SongDetailModal from "./SongDetailModal.vue";
 import SongEditModal from "./SongEditModal.vue";
@@ -146,6 +163,7 @@ import { useLibraryStore } from "@/stores/library";
 import { usePlaylistStore } from "@/stores/playlist";
 import { usePlayerStore } from "@/stores/player";
 import { useConfigStore } from "@/stores/config";
+import { useUiStore } from "@/stores/ui";
 import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
 import { useI18n } from "@/utils/i18n";
 import { qualityLabel as qualityText } from "@/utils/onlineSong";
@@ -158,6 +176,7 @@ const library = useLibraryStore();
 const playlist = usePlaylistStore();
 const player = usePlayerStore();
 const config = useConfigStore();
+const ui = useUiStore();
 const online = useOnlineLibrary();
 const { t } = useI18n();
 
@@ -227,13 +246,48 @@ const songs = computed(() => {
   );
 });
 
-// 空状态文案：按路由显示对应提示，避免"我的收藏/最近音乐"误导用户去扫描音乐库
-const emptyMessage = computed(() => {
-  if (route.name === "favorites") return t("song.emptyFav");
-  if (route.name === "recent") return t("song.emptyRecent");
-  if (route.name === "playlist") return t("song.emptyPlaylist");
-  return t("song.emptyAll");
+/**
+ * 空状态：按路由给出**下一步该做什么**，而不是一句"暂无歌曲"。
+ *
+ * 分两种情形，别混：
+ *   · 收藏 / 最近播放 / 歌单 为空 —— 用户已经会用这个软件了（他知道这些页是干嘛的），
+ *     只需要一句说明，不该给他看"扫描音乐库"那一套引导。
+ *   · 「全部音乐」为空 —— **这才是真正的首次使用**（曲库一首歌都没有），
+ *     此时要给出可点的下一步（扫描 / 导入音源），否则新用户直接卡死：
+ *     本仓库刻意不内置任何音源，他连"要去哪弄源"都无从知道。
+ */
+const emptyState = computed(() => {
+  if (route.name === "favorites") return { titleKey: "song.emptyFav" };
+  if (route.name === "recent") return { titleKey: "song.emptyRecent" };
+  if (route.name === "playlist") return { titleKey: "song.emptyPlaylist" };
+
+  // 只有本地**和**在线都空，才算"全新用户"；否则只是当前筛选没有内容
+  const brandNew = !library.songList.length && !library.onlineSongs.length;
+  if (!brandNew) {
+    // 有内容但被搜索/筛选滤空了 —— 给一句准确的话，不要引导去扫描（他明明有歌）
+    if (sourceFilter.value === "online") return { titleKey: "song.emptyFilterOnline" };
+    if (sourceFilter.value === "local") return { titleKey: "song.emptyFilterLocal" };
+    return { titleKey: "song.emptySearch" };
+  }
+
+  return {
+    titleKey: "song.welcomeTitle",
+    descKey: "song.welcomeDesc",
+    hintKey: "song.welcomeHint",
+    icon: "music",
+    primaryAction: "scan",
+    actions: [
+      { key: "scan", labelKey: "song.welcomeScan", icon: "folder", primary: true },
+      { key: "sources", labelKey: "song.welcomeSources", icon: "cloud" },
+    ],
+  };
 });
+
+/** 空状态里的按钮：只发起界面意图，具体在哪实现由对应组件负责（见 stores/ui.js） */
+function onEmptyAction(key) {
+  if (key === "scan") ui.requestFocusScanInput();
+  else if (key === "sources") ui.openSettings("online");
+}
 
 const total = computed(() => songs.value.length);
 const totalHeight = computed(() => Math.max(total.value, 0) * ROW_HEIGHT);
@@ -278,6 +332,69 @@ const editSong = ref(null);
 
 function openContextMenu(e, song) {
   ctx.value = { visible: true, x: e.clientX, y: e.clientY, song };
+}
+
+/**
+ * 列表行的键盘操作。
+ *
+ * 背景：整行原本只能鼠标点（`div` + `@click`），键盘用户完全用不了 —— 播放、
+ * 右键菜单都够不着。这里补上通行做法：
+ *   · ↑ / ↓  在行间移动焦点（列表本来就是纵向的）
+ *   · Home/End 跳到首尾
+ *   · Shift+F10 或 ContextMenu 键 = 右键菜单（Windows 上的标准快捷键）
+ *   · Enter / 空格 播放（在模板里绑定）
+ *
+ * ⚠️ 移动焦点要先把目标行**滚进可视区**：列表是虚拟滚动，
+ *    焦点行若在窗口之外，它根本没被渲染出来，也就 focus() 不到。
+ */
+function onRowKey(e, song) {
+  const cur = startIndex.value + visibleSongs.value.findIndex((s) => s.id === song.id);
+  let next = null;
+  if (e.key === "ArrowDown") next = cur + 1;
+  else if (e.key === "ArrowUp") next = cur - 1;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = total.value - 1;
+  else if (e.key === "F10" && e.shiftKey) {
+    // 键盘唤起右键菜单：菜单需要坐标，用该行的位置代替鼠标位置
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    ctx.value = { visible: true, x: rect.left + 40, y: rect.top + rect.height / 2, song };
+    return;
+  } else if (e.key === "ContextMenu") {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    ctx.value = { visible: true, x: rect.left + 40, y: rect.top + rect.height / 2, song };
+    return;
+  } else return;
+
+  if (next === null || next < 0 || next >= total.value) return;
+  e.preventDefault();
+  focusRow(next);
+}
+
+/** 把焦点移到第 index 行（必要时先滚动，让该行进入渲染窗口） */
+async function focusRow(index) {
+  const el = scrollEl.value;
+  if (!el) return;
+  const top = index * ROW_HEIGHT;
+  const bottom = top + ROW_HEIGHT;
+  // 目标行不在可视区内 → 先滚动再聚焦（否则虚拟列表还没渲染这一行）
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+  await nextTick();
+  const rows = el.querySelectorAll(".song-row");
+  const target = rows[index - startIndex.value];
+  target?.focus();
+}
+
+/** 行获得焦点时把它滚进可视区（鼠标滚轮 + Tab 聚焦混用时也能看到焦点在哪） */
+function onRowFocus(index) {
+  const el = scrollEl.value;
+  if (!el) return;
+  const top = index * ROW_HEIGHT;
+  const bottom = top + ROW_HEIGHT;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
 }
 
 function playAtFully(song) {
@@ -530,6 +647,13 @@ onBeforeUnmount(() => {
 }
 .song-row:hover {
   background: color-mix(in srgb, var(--teyvat-text-primary) 5%, transparent);
+}
+/* 键盘焦点可见：整行是 tabindex=0 的可聚焦元素，必须让人看得出焦点在哪一行。
+   用 :focus-visible 而不是 :focus —— 鼠标点击时不要出现描边（pointing device 场景下很吵）。 */
+.song-row:focus-visible {
+  outline: 2px solid var(--teyvat-gold);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--teyvat-gold) 8%, transparent);
 }
 .song-row--active {
   background: var(--playlist-active-row);

@@ -144,7 +144,21 @@
       </div>
     </div>
 
-    <div v-if="!ui.results.length" class="online-view__empty">{{ emptyText }}</div>
+    <!--
+      没有可用音源时是**真正的死胡同**（本仓库不内置任何音源），
+      所以这里不只是显示一句话，而是给出可点的下一步（去设置里导入源脚本）。
+      其余空状态（搜索中/无结果/未搜索）仍是一句提示即可。
+    -->
+    <EmptyState
+      v-if="!ui.results.length && !loading && !available.length"
+      title-key="online.noSourceTitle"
+      desc-key="online.noSourceDesc"
+      hint-key="online.noSourceHint"
+      icon="cloud"
+      :actions="[{ key: 'sources', labelKey: 'online.noSourceAction', icon: 'gear', primary: true }]"
+      @action="onEmptyAction"
+    />
+    <div v-else-if="!ui.results.length" class="online-view__empty">{{ emptyText }}</div>
 
     <SongContextMenu
       :visible="ctx.visible"
@@ -179,12 +193,14 @@
 <script setup>
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from "vue";
 import GlassCard from "./GlassCard.vue";
+import EmptyState from "./EmptyState.vue";
 import SongContextMenu from "./SongContextMenu.vue";
 import PlaylistPickerModal from "./PlaylistPickerModal.vue";
 import AppIcon from "./AppIcon.vue";
 import { usePlayerStore } from "@/stores/player";
 import { useOnlineLibrary } from "@/composables/useOnlineLibrary";
 import { useOnlineSearch, PAGE_SIZE, MAX_RESULTS } from "@/stores/onlineSearch";
+import { useUiStore } from "@/stores/ui";
 import { useI18n } from "@/utils/i18n";
 import { toast, toastError } from "@/utils/toast";
 import { toPlain } from "@/utils/bridge";
@@ -229,6 +245,11 @@ const emptyText = computed(() => {
 
 function platLabel(key) {
   return PLATFORMS.find((p) => p.key === key)?.label || key;
+}
+
+/** 空状态里的按钮：跳去设置页的「在线」分类导入音源脚本 */
+function onEmptyAction(key) {
+  if (key === "sources") useUiStore().openSettings("online");
 }
 
 /** 平台 chip / 来源徽标的提示：可用平台展示其源声明支持的最高音质；解析失败过的平台给出原因 */

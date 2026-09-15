@@ -20,6 +20,7 @@
     <div class="sidebar__scan">
       <div class="scan-row">
         <input
+          ref="scanInputEl"
           v-model="scanPath"
           class="scan-input ui-input"
           type="text"
@@ -70,11 +71,12 @@
 </template>
 
 <script setup>
-import { ref, onBeforeUnmount } from "vue";
+import { ref, onBeforeUnmount, watch, nextTick } from "vue";
 import NavItem from "./NavItem.vue";
 import { useApi } from "@/composables/useApi";
 import { useConfigStore } from "@/stores/config";
 import { useLibraryStore } from "@/stores/library";
+import { useUiStore } from "@/stores/ui";
 import { useI18n } from "@/utils/i18n";
 
 const config = useConfigStore();
@@ -83,6 +85,20 @@ const library = useLibraryStore();
 const { startScan, getScanStatus, loadSongs, selectFolder } = useApi();
 
 const scanPath = ref("");
+const scanInputEl = ref(null);
+const ui = useUiStore();
+
+// 空状态卡片请求「把焦点送到扫描输入框」（见 stores/ui.js）。
+// 用自增计数而非布尔值，这样连点两次也能再次触发。
+watch(
+  () => ui.focusScanInput,
+  async (n) => {
+    if (!n) return;
+    await nextTick();
+    scanInputEl.value?.focus();
+  },
+);
+
 const scanning = ref(false);
 const scanMsg = ref("");
 const scanPercent = ref(0);
