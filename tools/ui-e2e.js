@@ -461,66 +461,64 @@ const skip = (name, why) => {
     await sleep(200);
 
     const favState = await cdp.eval(`(async () => {
-      const lib = await fetch('/api/online/library').then((r) => r.json());
-      // ⚠️ 必须盯着**与点击同一首**歌的状态。
-      // 旧实现是「取 /api/online/library 的第一条」当观察目标，却点「搜索结果第一行的爱心」——
-      // 两者常常不是同一首歌（搜索顺序 ≠ 入库顺序），于是 toggle 生效了而观测的那首没变，
-      // 断言就随机失败。改成先取行首那首的标题，再按标题到库里找对应记录。
       const row = document.querySelector('.online-row');
       if (!row) return { err: 'no-row' };
-      const title = row.querySelector('.col-title').textContent.replace(/在线音乐/g, '').trim();
-      const libEntry = (lib.data || []).find((s) => title.includes(s.title) || s.title.includes(title));
 
+      // 点的是「搜索结果第一行的爱心」。难点在于：**怎么知道这一行对应库里哪条记录**。
+      // ⚠️ 不要用标题去反查。实测踩到：曲库里同时存在「晴天」「晴天 (KTV版伴奏)」等多首近名歌，
+      //    而行的 .col-title 里还夹着「已下载」徽标文字，includes 双向匹配会命中**另一首**；
+      //    于是点击确实生效了（收藏集合真的变了），观测的那首却没变 → 断言随机失败。
+      // 改用**收藏集合的差集**：一次点击必然只影响一首，被改的那首就是答案，且与标题无关。
+      const favIdsOf = (r) => (r.data || []).map((s) => s.id);
       const favsBefore = await fetch('/api/favorites').then((r) => r.json());
-      const wasFav = !!libEntry && (favsBefore.data || []).some((s) => s.id === libEntry.id);
+      const beforeIds = favIdsOf(favsBefore);
 
       const btns = row.querySelectorAll('.op-btn');
       if (btns.length < 5) return { err: 'op-btn=' + btns.length };
-      btns[3].click(); // 收藏
+      btns[3].click(); // 收藏（切换语义）
       await new Promise((r) => setTimeout(r, 3000));
 
       const [lib2, favsAfter] = await Promise.all([
         fetch('/api/online/library').then((r) => r.json()),
         fetch('/api/favorites').then((r) => r.json()),
       ]);
-      // 观察目标必须还是「刚才点的那一首」：入库顺序一变，lib2[0] 就不是它了。
-      // 用标题二次定位（若它刚被收藏，库里应已有它；若刚被取消收藏，库里这条记录仍在，
-      // 收藏只是把 id 挂进 favorites，不会删除歌曲），所以按标题必定找得到。
-      const after =
-        (lib2.data || []).find((s) => s.id === (libEntry && libEntry.id)) ||
-        (lib2.data || []).find((s) => title.includes(s.title) || s.title.includes(title)) ||
-        null;
-      const nowFav = !!after && (favsAfter.data || []).some((s) => s.id === after.id);
-      // ⚠️ 一致性不能用「全局收藏总数」来验——旧的写法是
-      //     nowFav ? favCount > 0 : favCount === 0，它默认「收藏列表里只有这首歌」。
-      //   但开发机曲库里本来就有别的收藏（本地歌、上一次跑测留下的在线歌），
-      //   于是「取消收藏这一首」后 nowFav=false 而 favCount 仍为 1 → 误报。
-      //   正确的不变量是：**收藏列表里的每一条，其收藏状态都为真；反之亦然**（双向一致）。
-      const favIds = (favsAfter.data || []).map((s) => s.id);
+      const afterIds = favIdsOf(favsAfter);
+      const added = afterIds.filter((id) => !beforeIds.includes(id));
+      const removed = beforeIds.filter((id) => !afterIds.includes(id));
+      const toggledId = added.length ? added[0] : removed.length ? removed[0] : null;
+      const toggled = (lib2.data || []).find((s) => s.id === toggledId) || null;
+
+      // 不变量：收藏列表里的每一条都必须存在于在线曲库（收藏不会指向不存在的歌）。
       const listIds = (lib2.data || []).map((s) => s.id);
-      const inList = (id) => listIds.includes(id);
-      const listConsistent = favIds.every((id) => inList(id)); // 收藏的必然在曲库
-      const favSetMatches = !!after && favIds.includes(after.id) === nowFav; // 单曲状态与列表一致
+      const listConsistent = afterIds.every((id) => listIds.includes(id));
       return {
         lib: (lib2.data || []).length,
-        favCount: favIds.length,
-        wasFav,
-        nowFav,
-        flipped: wasFav !== nowFav,
-        firstTitle: after ? after.title : null,
-        firstSource: after ? after.online_source : null,
-        matched: !!after,
+        favCount: afterIds.length,
+        beforeCount: beforeIds.length,
+        // 恰好一首被切换，才说明这次点击干净地生效了（0 = 没生效，≥2 = 误伤别的歌）
+        changedCount: added.length + removed.length,
+        wasFav: toggledId != null && beforeIds.includes(toggledId),
+        nowFav: toggledId != null && afterIds.includes(toggledId),
+        firstTitle: toggled ? toggled.title : null,
+        firstSource: toggled ? toggled.online_source : null,
+        matched: !!toggled,
+        // 被切换的必须是在线歌曲 —— 否则说明点到的不是搜索行那首（本地歌不该在这里被切）
+        toggledIsOnline: !!toggled && !!toggled.online_source,
         listConsistent,
-        favSetMatches,
       };
     })()`);
     console.log("  收藏结果:", JSON.stringify(favState));
     ok("收藏在线歌曲 → 已入库到曲库", favState?.lib > 0, JSON.stringify(favState));
-    ok("收藏在线歌曲 → 观测到同一首歌（未被入库顺序错位）", favState?.matched === true, JSON.stringify(favState));
-    ok("收藏在线歌曲 → 收藏状态被切换", favState?.flipped === true, JSON.stringify(favState));
+    ok("收藏在线歌曲 → 被切换的那首能在在线曲库中定位到", favState?.matched === true, JSON.stringify(favState));
+    ok("收藏在线歌曲 → 收藏状态被切换", favState?.wasFav !== favState?.nowFav, JSON.stringify(favState));
     ok(
-      "收藏列表与该曲收藏状态一致",
-      favState?.favSetMatches === true,
+      "收藏点击恰好影响一首（0=没生效，≥2=误伤别的歌）",
+      favState?.changedCount === 1,
+      JSON.stringify(favState)
+    );
+    ok(
+      "被切换的是在线歌曲（说明点的确实是搜索行那首）",
+      favState?.toggledIsOnline === true,
       JSON.stringify(favState)
     );
     ok(
