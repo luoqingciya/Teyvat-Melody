@@ -57,22 +57,22 @@ function pickAssetFor(assets, installed) {
 /**
  * 查询最新 Release 并与当前版本比对。
  * @param {string} currentVersion 当前版本（app.getVersion()）
- * @param {{fetchImpl?: Function, apiUrl?: string}} [opts] 便于测试注入
+ * @param {{fetchImpl?: Function, apiUrl?: string, proxy?: object}} [opts] 便于测试注入
+ *        proxy 传 `proxy.normalizeProxy()` 的结果；启用时请求走用户的 HTTP 代理
  * @returns {Promise<object>} { ok, hasUpdate, current, latest, ... }；失败时 ok=false 且带 message
  */
 async function checkForUpdate(currentVersion, opts = {}) {
-  const doFetch = opts.fetchImpl || fetch;
   const apiUrl = opts.apiUrl || API_URL;
+  const headers = { Accept: "application/vnd.github+json", "User-Agent": "TeyvatMelody-Updater" };
   try {
-    const res = await doFetch(apiUrl, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "TeyvatMelody-Updater" },
-      signal: AbortSignal.timeout(TIMEOUT),
-    });
-    if (!res.ok) {
-      // 404 通常是还没有发布任何 Release（不算错误，提示一下即可）
-      return { ok: false, hasUpdate: false, current: currentVersion, message: `GitHub API ${res.status}` };
-    }
-    const rel = await res.json();
+    const rel = opts.fetchImpl
+      ? await (async () => {
+          const res = await opts.fetchImpl(apiUrl, { headers });
+          if (!res.ok) throw Object.assign(new Error(`GitHub API ${res.status}`), { __status: res.status });
+          return res.json();
+        })()
+      : await requestJson(apiUrl, headers, opts.proxy);
+
     const latest = String(rel.tag_name || "").replace(/^v/i, "");
     const base = { ok: true, current: String(currentVersion || ""), latest };
     if (!latest || !isNewer(latest, currentVersion)) return { ...base, hasUpdate: false };
@@ -86,8 +86,65 @@ async function checkForUpdate(currentVersion, opts = {}) {
       assets: pickAssets(rel.assets),
     };
   } catch (e) {
-    return { ok: false, hasUpdate: false, current: currentVersion, message: e.message };
+    // 404 通常是还没有发布任何 Release（不算错误，提示一下即可）
+    const msg = e && e.__status ? `GitHub API ${e.__status}` : e.message;
+    return { ok: false, hasUpdate: false, current: currentVersion, message: msg };
   }
+}
+
+/**
+ * 发一次 GET 并解析 JSON。
+ *
+ * ⚠️ 这里**不能用 `fetch`**：Node 的 fetch（undici）不认 `HTTP_PROXY`，要走代理必须给它
+ * 传 `dispatcher: new ProxyAgent(...)`，而主进程内 `require("undici")` 拿不到
+ * （Node 内置但没暴露为可 require 的模块），引第三方库又违背「零运行时依赖」。
+ * 所以改走原生 http/https + 自己写的 CONNECT 隧道 agent（proxyAgent.js）。
+ */
+function requestJson(url, headers, proxy) {
+  const http = require("http");
+  const https = require("https");
+  const proxyAgent = require("./proxyAgent");
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return reject(new Error(`非法 URL：${url}`));
+    }
+    const lib = u.protocol === "https:" ? https : http;
+    const req = lib.request(
+      proxyAgent.withProxyOptions(
+        {
+          hostname: u.hostname,
+          port: u.port || (u.protocol === "https:" ? 443 : 80),
+          path: u.pathname + u.search,
+          method: "GET",
+          headers,
+          timeout: TIMEOUT,
+        },
+        proxy
+      ),
+      (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          return reject(Object.assign(new Error(`GitHub API ${res.statusCode}`), { __status: res.statusCode }));
+        }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          } catch (e) {
+            reject(new Error(`响应不是合法 JSON：${e.message}`));
+          }
+        });
+        res.on("error", reject);
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("请求超时")));
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /**

@@ -13,6 +13,8 @@ const { SourceManager } = require("./sourceManager");
 const onlineSearch = require("./onlineSearch");
 const onlineLyric = require("./onlineLyric");
 const updater = require("./updater");
+const appConfig = require("./appConfig");
+const proxyAgent = require("./proxyAgent");
 
 const BACKEND_HOST = "127.0.0.1";
 const DEFAULT_BACKEND_PORT = 5000;
@@ -69,6 +71,8 @@ function migrateLegacyData(newRoot, legacyRoots) {
 // 统一放到数据根目录下。必须在创建任何窗口之前调用 app.setPath 重定向 userData。
 (function ensureUserDataUnderRoot() {
   const root = dataRoot();
+  // 配置文件的读取一律基于数据根目录；这里注入一次即可（dataRoot 之后不会再变）
+  appConfig.setDataRoot(root);
   // 先把 v1.0.6 留在 %LOCALAPPDATA% 的数据搬回软件目录（必须在 app.setPath 之前）
   if (!IS_DEV) {
     migrateLegacyData(root, [dataRootUtil.legacyLocalAppDataRoot(process.env.LOCALAPPDATA)]);
@@ -849,12 +853,55 @@ ipcMain.handle("online:platforms", () => {
 // 这里在每次取歌词前读一次 —— 文件只有几百字节，且只在切歌时发生，代价可忽略；
 // 好处是用户在设置页关掉缓存后，下一次切歌就立刻不再写盘。
 function onlineCacheEnabled() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(dataRoot(), "cache", "config.json"), "utf8"));
-    return raw.enabled !== false;
-  } catch {
-    return true; // 配置不存在 / 损坏 → 默认开启（与后端默认值一致）
-  }
+  return appConfig.readConfig().enabled !== false; // 配置不存在 / 损坏 → 默认开启（与后端一致）
+}
+
+/**
+ * 以「流式下载到文件」的方式发一次 GET，并回报进度。
+ *
+ * 刻意用原生 `http`/`https` 而不是 `fetch`：项目零运行时依赖，而主进程内 `require("undici")`
+ * 拿不到（Node 内置但没暴露），所以 `fetch` 想走用户配置的 HTTP 代理做不到 —— 只能走原生请求
+ * + 自写的 CONNECT 隧道 agent（见 proxyAgent.js）。更新包有 90 多 MB，正好也要流式落盘。
+ *
+ * @returns {Promise<{status:number, headers:object, stream:import("stream").Readable, cleanup:Function}>}
+ */
+function httpGetStream(url, { onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return reject(new Error(`非法 URL：${url}`));
+    }
+    // ⚠️ 本机地址永远直连：通知图标传进来的其实是本机封面代理的 URL
+    //（http://127.0.0.1:<后端端口>/api/online/image?...），塞进代理就会拉不到图。
+    const proxy = proxyAgent.effectiveProxy(url, appConfig.proxyConfig());
+    const lib = u.protocol === "https:" ? require("https") : require("http");
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === "https:" ? 443 : 80),
+      path: u.pathname + u.search,
+      method: "GET",
+      headers: { "User-Agent": "TeyvatMelody", Accept: "*/*" },
+    };
+    const req = lib.request(proxyAgent.withProxyOptions(opts, proxy), (res) => {
+      const total = Number(res.headers["content-length"]) || 0;
+      let received = 0;
+      // 手动计数而不是套一层 Transform：调用方拿到的是原始 res，行为可与之前完全一致
+      res.on("data", (chunk) => {
+        received += chunk.length;
+        if (onProgress) onProgress(received, total);
+      });
+      resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        stream: res,
+        cleanup: () => res.destroy(),
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
@@ -889,6 +936,7 @@ ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
     };
   }
   try {
+    onlineSearch.setProxy(appConfig.proxyConfig());
     const r = await onlineSearch.search(keyword, picked, undefined, page);
     return { ok: true, ...r, availableSources: available };
   } catch (e) {
@@ -923,10 +971,98 @@ ipcMain.handle("app:openDataDir", async () => {
   return { ok: !err, message: err || "" };
 });
 
+/**
+ * 以「读-改-写」方式更新 `cache/config.json` 里的字段，**保留其它键**。
+ *
+ * ⚠️ 后端的 `save_config()` 是白名单实现，会**整体重写**这个文件且只保留它认识的键
+ * （enabled / maxBytes）。所以从主进程写配置时如果也整文件覆盖，就可能把后端的键抹掉；
+ * 反过来后端写也会抹掉我们的 proxy。两边都必须在**已读过的最新内容**上打补丁 ——
+ * 这也是这里不直接 writeFile 一个常量对象的原因。
+ */
+function writeConfigPatch(patch) {
+  const p = appConfig.configPath();
+  const cur = appConfig.readConfig();
+  const next = { ...cur, ...patch };
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(next), "utf8");
+  } catch (e) {
+    console.error("[config] 写入失败:", e.message);
+  }
+  return next;
+}
+
+/** 把最新的代理配置推给常驻模块（源脚本宿主、搜索/歌词请求都靠它） */
+function applyProxyToModules() {
+  const proxy = appConfig.proxyConfig();
+  sourceManager.setProxy(proxy);
+  onlineSearch.setProxy(proxy);
+  return proxy;
+}
+
+// ---------------- 网络代理设置 ----------------
+// 代理配置与在线缓存共用 `cache/config.json`（见 appConfig.js 的说明）。
+// 主进程每次联网前现读一次文件，所以这里不需要维护缓存失效 —— 但**源脚本与搜索模块**
+// 是常驻对象，得把新值推给它们，故保存后立刻 setProxy。
+ipcMain.handle("proxy:get", () => {
+  const proxy = appConfig.proxyConfig();
+  return { ok: true, proxy: { enabled: proxy.enabled, host: proxy.host, port: proxy.port } };
+});
+
+ipcMain.handle("proxy:set", (_e, { enabled, host, port }) => {
+  const { validateProxySave } = require("./proxy");
+  // 校验规则在 proxy.js（纯函数，有单测）。这里的两种拒绝情形见那边的注释：
+  // 启用却填不全、以及「关着开关但填错了」，都不能放行。
+  const r = validateProxySave({ enabled, host, port });
+  if (!r.ok) return r;
+  const saved = writeConfigPatch({ proxy: r.proxy });
+  applyProxyToModules();
+  return { ok: true, proxy: saved.proxy, effective: !!r.proxy.enabled };
+});
+
+/**
+ * 试连一次代理，验证「主机:端口」真的可用。
+ *
+ * 刻意请求 `https://api.github.com` 而不是随便一个地址：它是本项目实际依赖的域名之一
+ * （更新检查走它），而且走 HTTPS 才能同时验证 CONNECT 隧道与 TLS 两段。
+ * 只报结果，不改配置。
+ */
+ipcMain.handle("proxy:test", async (_e, { host, port }) => {
+  const { normalizeProxy } = require("./proxy");
+  const { createProxiedSocket } = require("./proxyAgent");
+  const proxy = normalizeProxy({ enabled: true, host, port });
+  if (!proxy.enabled) return { ok: false, message: "代理主机或端口无效" };
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => {
+      if (!done) {
+        done = true;
+        resolve(r);
+      }
+    };
+    const timer = setTimeout(() => finish({ ok: false, message: "连接超时（10 秒）" }), 10000);
+    createProxiedSocket(
+      proxy,
+      { host: "api.github.com", port: 443, servername: "api.github.com", isHttps: true },
+      (err, socket) => {
+        clearTimeout(timer);
+        if (err) return finish({ ok: false, message: err.message });
+        try {
+          socket.destroy();
+        } catch {
+          /* ignore */
+        }
+        finish({ ok: true, message: `隧道建立成功（${proxy.host}:${proxy.port}）` });
+      }
+    );
+  });
+});
+
 // 查 GitHub Release 的最新版本并与当前版本比对；失败不抛错，返回 ok=false 供界面提示。
 // 顺带回传「是否安装版」与「按分发方式挑好的下载项」，界面据此决定按钮文案与后续动作。
 ipcMain.handle("update:check", async () => {
-  const r = await updater.checkForUpdate(app.getVersion());
+  // 先注入最新代理配置：用户可能刚在设置页改过，而 updater 的 fetch 需要它
+  const r = await updater.checkForUpdate(app.getVersion(), { proxy: appConfig.proxyConfig() });
   if (!r.ok) return r;
   const installed = isInstalledBuild();
   return { ...r, installed, asset: updater.pickAssetFor(r.assets, installed) };
@@ -940,10 +1076,6 @@ ipcMain.handle("update:download", async (e, { url, name }) => {
   const dest = path.join(dir, safe);
   try {
     fs.mkdirSync(dir, { recursive: true });
-    const res = await fetch(url);
-    if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
-    const total = Number(res.headers.get("content-length")) || 0;
-    let received = 0;
     let lastSent = 0;
     const report = (percent) => {
       try {
@@ -952,19 +1084,25 @@ ipcMain.handle("update:download", async (e, { url, name }) => {
         /* 窗口可能已关闭 */
       }
     };
-    // 用 Transform 统计字节：既能报进度，又不破坏 pipeline 的背压处理
-    const counter = new Transform({
-      transform(chunk, _enc, cb) {
-        received += chunk.length;
+    let received = 0;
+    let total = 0;
+    // 走原生请求 + 代理（不能用 fetch：见 httpGetStream 的说明）
+    const res = await httpGetStream(url, {
+      onProgress: (got, all) => {
+        received = got;
+        total = all;
         const now = Date.now();
         if (now - lastSent > 300) {
           lastSent = now;
           report(total ? Math.round((received / total) * 100) : 0);
         }
-        cb(null, chunk);
       },
     });
-    await pipeline(Readable.fromWeb(res.body), counter, fs.createWriteStream(dest));
+    if (res.status !== 200) {
+      res.cleanup();
+      return { ok: false, message: `HTTP ${res.status}` };
+    }
+    await pipeline(res.stream, fs.createWriteStream(dest));
     report(100);
     return { ok: true, path: dest, size: received };
   } catch (err) {
@@ -1069,10 +1207,14 @@ ipcMain.handle("notify:song", async (_e, { title, artist, songId, iconUrl }) => 
   // 在线歌曲：顺手把封面拉成 NativeImage 当通知图标（失败就退回默认，不影响通知本身）
   if (iconUrl) {
     try {
-      const res = await fetch(iconUrl);
-      if (res.ok) {
-        const img = nativeImage.createFromBuffer(Buffer.from(await res.arrayBuffer()));
+      const res = await httpGetStream(iconUrl);
+      if (res.status === 200) {
+        const chunks = [];
+        for await (const c of res.stream) chunks.push(c);
+        const img = nativeImage.createFromBuffer(Buffer.concat(chunks));
         if (!img.isEmpty()) opts.icon = img;
+      } else {
+        res.cleanup();
       }
     } catch {
       /* 通知图标非关键，忽略 */
@@ -1128,6 +1270,9 @@ if (!gotLock) {
     createTray();
     // 恢复上次的桌面歌词可见性（默认隐藏）
     if (loadLyricSettings().visible) lyricsSetVisible(true);
+    // 先把代理配置推给常驻模块（源宿主 / 搜索），**必须在 init 之前** ——
+    // 源脚本的 inited 握手本身就要访问源后端，晚了第一次握手就走了直连。
+    applyProxyToModules();
     // 加载自定义源（沙箱执行源脚本，inited 握手）
     sourceManager.init().catch((e) => console.error("自定义源初始化失败:", e.message));
     app.on("activate", () => {

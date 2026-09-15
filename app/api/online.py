@@ -40,6 +40,49 @@ _DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# ---------------- 上游请求（统一走用户配置的代理） ----------------
+# 后端的对外流量全在**这四个**地方：音频代理 / 封面代理 / 下载取音频 / 下载抓封面。
+# 全部集中到这一个函数，是为了让「代理生效」只有一处实现 —— 漏掉任何一处，
+# 用户开了代理仍会有部分功能连不上，而这种半通不通的状态最难排查。
+_UPSTREAM_OPENER = None
+_UPSTREAM_OPENER_KEY = None
+_OPENER_LOCK = threading.Lock()
+
+
+def _upstream_opener():
+    """按当前代理配置构造 opener；配置没变则复用（配置读起来很便宜，但仍加锁避免并发重建）。"""
+    global _UPSTREAM_OPENER, _UPSTREAM_OPENER_KEY
+    proxy_url = online_cache.proxy_url()
+    with _OPENER_LOCK:
+        if _UPSTREAM_OPENER is not None and _UPSTREAM_OPENER_KEY == proxy_url:
+            return _UPSTREAM_OPENER
+        if proxy_url:
+            handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        else:
+            handler = urllib.request.ProxyHandler({})  # 显式空字典 = 不用任何代理
+        _UPSTREAM_OPENER = urllib.request.build_opener(handler)
+        _UPSTREAM_OPENER_KEY = proxy_url
+        return _UPSTREAM_OPENER
+
+
+def _upstream_open(req, timeout):
+    """打开上游请求。**本机地址永远直连** —— 不能把本地 Flask 自己的请求塞进代理。"""
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    if online_cache.proxy_url() and not _is_loopback_url(url):
+        return _upstream_opener().open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _is_loopback_url(url: str) -> bool:
+    try:
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.startswith("127.")
+
+
 # 各平台音频 CDN 的防盗链 Referer；未收录的平台只给通用 UA
 _PLATFORM_REFERER = {
     "tx": "https://y.qq.com/",
@@ -200,7 +243,7 @@ def proxy():
 
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+        upstream = _upstream_open(req, _TIMEOUT)
     except urllib.error.HTTPError as exc:
         # 上游 416（Range 越界）等原样回传状态码，前端据此重置进度
         try:
@@ -317,6 +360,11 @@ def cache_clear():
 def cache_config():
     """更新缓存开关 / 容量上限；调小上限后立即淘汰到新上限内。"""
     data = request.get_json(silent=True) or {}
+    # 带代理配置时先校验：非法值直接 400，别静默丢弃（否则用户以为设上了）
+    if "proxy" in data:
+        ok_, reason, _ = online_cache.validate_proxy_save(data["proxy"])
+        if not ok_:
+            return jsonify({"code": 400, "message": reason, "data": None}), 400
     online_cache.save_config(data)
     online_cache.evict()
     return jsonify({"code": 200, "message": "success", "data": online_cache.stats()})
@@ -339,7 +387,7 @@ def image():
 
     req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
     try:
-        upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+        upstream = _upstream_open(req, _TIMEOUT)
     except urllib.error.HTTPError as exc:
         try:
             exc.close()
@@ -515,7 +563,7 @@ def _fetch_cover(source: str, url: str) -> bytes:
         return b""
     try:
         req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
-        upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+        upstream = _upstream_open(req, _TIMEOUT)
         try:
             ctype = str(upstream.headers.get("Content-Type") or "")
             if not ctype.lower().startswith("image/"):
@@ -572,7 +620,7 @@ def download():
             _dl_patch(key, {"received": dest.stat().st_size, "total": dest.stat().st_size})
         else:
             req = urllib.request.Request(url, headers=_upstream_headers(source), method="GET")
-            upstream = urllib.request.urlopen(req, timeout=_TIMEOUT)
+            upstream = _upstream_open(req, _TIMEOUT)
             try:
                 content_type = str(upstream.headers.get("Content-Type") or "")
                 dest = _unique_dest(music, stem, online_cache.ext_for(content_type))

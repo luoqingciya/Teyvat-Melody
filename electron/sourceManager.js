@@ -4,7 +4,7 @@
 //   <软件根目录>/sources/sources.json —— 启用状态与排序
 const fs = require("fs");
 const path = require("path");
-const { SourceInstance } = require("./sourceHost");
+const { SourceInstance, setProxy: setHostProxy } = require("./sourceHost");
 
 const CONFIG_FILE = "sources.json";
 
@@ -26,6 +26,17 @@ class SourceManager {
   /** 源列表发生任何变化后调用：旧的解析失败结论不再可信 */
   _clearFailures() {
     this.failures.clear();
+  }
+
+  /**
+   * 把用户配置的 HTTP 代理推给源宿主。
+   *
+   * ⚠️ 源脚本自身**不发请求**，它回调宿主的 `lx.request`，由宿主在 sourceHost.js 里真正发出 ——
+   * 所以四平台「已知 musicInfo → 取播放地址」这条最关键的链路，代理是在**那里**生效的。
+   * 本方法只是把配置转达过去（sourceHost 不持有数据目录，不该自己去读配置）。
+   */
+  setProxy(proxy) {
+    setHostProxy(proxy);
   }
 
   /**

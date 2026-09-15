@@ -53,7 +53,11 @@ def _config_path() -> Path:
 
 
 def load_config() -> dict:
-    """读取缓存配置（缺省：开启、上限 1 GiB）。"""
+    """读取缓存配置（缺省：开启、上限 1 GiB、代理未启用）。
+
+    ⚠️ 这个文件是**跨进程共享**的（主进程也直接读它，见 electron/appConfig.js），
+    往 schema 里加键时两边都要同步 —— 尤其 `save_config()` 是白名单实现。
+    """
     try:
         raw = json.loads(_config_path().read_text("utf-8"))
     except Exception:  # noqa: BLE001  文件不存在 / 损坏都退回默认
@@ -64,11 +68,37 @@ def load_config() -> dict:
         max_bytes = int(raw.get("maxBytes", DEFAULT_MAX_BYTES))
     except (TypeError, ValueError):
         max_bytes = DEFAULT_MAX_BYTES
-    return {"enabled": bool(raw.get("enabled", True)), "maxBytes": max(0, max_bytes)}
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "maxBytes": max(0, max_bytes),
+        "proxy": _normalize_proxy(raw.get("proxy")),
+    }
+
+
+def _normalize_proxy(raw) -> dict:
+    """归一化代理配置。**任何不完整/非法的组合都退回「未启用」** ——
+    半填的配置若被判为「已启用」，会让整个应用连不上网，比不生效糟得多。
+    判据必须与 electron/proxy.js 的 normalizeProxy 完全一致。"""
+    off = {"enabled": False, "host": "", "port": 0}
+    if not isinstance(raw, dict) or not raw.get("enabled"):
+        return off
+    host = str(raw.get("host") or "").strip()
+    if not host:
+        return off
+    try:
+        port = int(raw.get("port"))
+    except (TypeError, ValueError):
+        return off
+    if port < 1 or port > 65535:
+        return off
+    return {"enabled": True, "host": host, "port": port}
 
 
 def save_config(patch: dict) -> dict:
-    """更新缓存配置（仅接受 enabled / maxBytes），返回最新配置。"""
+    """更新配置（仅接受 enabled / maxBytes / proxy），返回最新配置。
+
+    ⚠️ 白名单实现：新增可保存字段必须在这里放行，否则界面写进来会被**静默丢弃**。
+    """
     cfg = load_config()
     if "enabled" in patch:
         cfg["enabled"] = bool(patch["enabled"])
@@ -77,12 +107,61 @@ def save_config(patch: dict) -> dict:
             cfg["maxBytes"] = max(0, int(patch["maxBytes"]))
         except (TypeError, ValueError):
             pass
+    if "proxy" in patch:
+        # 只收合法配置；非法值原样保留（不写入），是否报错交给调用方决定 ——
+        # save_config 是底层辅助函数，抛异常会波及别的调用方。
+        # 面向用户的拒绝发生在 app/api/online.py 的 /cache/config（那里会返回 400）。
+        ok_, _reason, normalized = validate_proxy_save(patch["proxy"])
+        if ok_:
+            cfg["proxy"] = normalized
     try:
         _config_path().parent.mkdir(parents=True, exist_ok=True)
         _config_path().write_text(json.dumps(cfg, ensure_ascii=False), "utf-8")
     except OSError:
         pass
     return cfg
+
+
+def proxy_config() -> dict:
+    """当前代理配置（已归一化）。"""
+    return load_config()["proxy"]
+
+
+def validate_proxy_save(raw) -> tuple[bool, str, dict]:
+    """保存代理配置前校验。返回 (是否接受, 拒绝原因, 归一化结果)。
+
+    与 electron/proxy.js 的 validateProxySave 是**同一套判据**（跨语言镜像）。
+    单独在写入口再拦一道的理由：后端也是 `cache/config.json` 的写入方，任何一方
+    放行了非法配置，另一方读到的就是「看着有值、其实没设」。
+
+    两种拒绝：
+      ① 启用但填不全 → 拒（否则用户以为开了，实际直连）
+      ② 没启用但**填了且填错** → 拒（否则存成空配置，输入框里却留着用户的字）
+    只有「开关关着 + 两个框都空」才算正当清空。
+    """
+    src = raw if isinstance(raw, dict) else {}
+    enabled = bool(src.get("enabled"))
+    host = str(src.get("host") or "").strip()
+    raw_port = src.get("port")
+    port_s = "" if raw_port is None else str(raw_port).strip()
+
+    # 判定「填错了」看字段本身是否有效，不能用 enabled=False 的归一化结果比对 ——
+    # 那样会把「先填好、暂不启用」也误杀。
+    as_on = _normalize_proxy({"enabled": True, "host": host, "port": raw_port})
+    if enabled and not as_on["enabled"]:
+        return False, "请填写有效的代理主机与端口（1-65535）", as_on
+    touched = host != "" or port_s != ""
+    if not enabled and touched and not as_on["enabled"]:
+        return False, "代理主机或端口填写有误（端口需为 1-65535），请检查后再关闭", as_on
+    # 接受时返回**按调用方 enabled 归一化**的结果：开关关着就该返回 enabled=False，
+    # 不能把探测用的 as_on（恒为 True）透传出去 —— 那会让「先填好、暂不启用」变成真启用。
+    return True, "", _normalize_proxy({"enabled": enabled, "host": host, "port": raw_port})
+
+
+def proxy_url() -> Optional[str]:
+    """代理的 `http://host:port` 形式；未启用时 None。"""
+    cfg = proxy_config()
+    return f"http://{cfg['host']}:{cfg['port']}" if cfg["enabled"] else None
 
 
 def enabled() -> bool:

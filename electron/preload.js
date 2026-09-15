@@ -77,6 +77,10 @@ api.onUpdateProgress = (cb) => {
 };
 // 用系统浏览器打开更新页 / 下载链接（主进程会校验域名）
 api.openUpdatePage = (url) => invoke("update:open", { url });
+// HTTP 代理设置（配置存在 <数据根>/cache/config.json，主进程与后端共读）
+api.getProxy = () => invoke("proxy:get");
+api.setProxy = (cfg) => invoke("proxy:set", cfg || {});
+api.testProxy = (cfg) => invoke("proxy:test", cfg || {});
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

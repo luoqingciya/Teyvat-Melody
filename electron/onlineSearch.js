@@ -11,6 +11,7 @@
 const http = require("http");
 const https = require("https");
 const vm = require("vm");
+const proxyAgent = require("./proxyAgent");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -20,6 +21,15 @@ const TIMEOUT = 12000;
 const DEFAULT_SOURCES = ["tx", "kg", "wy", "kw"];
 
 // ---------------- HTTP ----------------
+
+// 代理配置由 main.js 注入（本模块不该知道数据目录在哪）。默认关闭。
+// 四平台搜索/歌词/封面都经过 request()，所以这里是覆盖面最大的一个注入点。
+let _proxy = { enabled: false, host: "", port: 0 };
+
+/** 由 main.js 在启动时与配置变更后调用 */
+function setProxy(proxy) {
+  _proxy = proxy && proxy.enabled ? proxy : { enabled: false, host: "", port: 0 };
+}
 
 /** 轻量 HTTP 请求：返回 { status, headers, text }；跟随重定向，超时中断。 */
 function request(url, { method = "GET", headers = {}, body = null, timeout = TIMEOUT, redirects = 3 } = {}) {
@@ -36,14 +46,19 @@ function request(url, { method = "GET", headers = {}, body = null, timeout = TIM
     if (payload) reqHeaders["Content-Length"] = payload.length;
 
     const req = lib.request(
-      {
-        hostname: u.hostname,
-        port: u.port || (u.protocol === "https:" ? 443 : 80),
-        path: u.pathname + u.search,
-        method,
-        headers: reqHeaders,
-        timeout,
-      },
+      proxyAgent.withProxyOptions(
+        {
+          hostname: u.hostname,
+          port: u.port || (u.protocol === "https:" ? 443 : 80),
+          path: u.pathname + u.search,
+          method,
+          headers: reqHeaders,
+          timeout,
+        },
+        // 本机地址不代理（shouldProxy 会排掉 loopback 与非 http(s)），
+        // 否则万一有本地源服务，设了代理就再也连不上。
+        proxyAgent.effectiveProxy(url, _proxy)
+      ),
       (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
           res.resume();
@@ -374,6 +389,7 @@ async function search(keyword, sources, limit = 30, page = 1) {
 
 module.exports = {
   search,
+  setProxy,
   DEFAULT_SOURCES,
   // 以下导出供离线自检使用
   normalize,

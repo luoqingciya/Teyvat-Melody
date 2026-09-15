@@ -9,12 +9,28 @@ const http = require("http");
 const https = require("https");
 const zlib = require("zlib");
 const crypto = require("crypto");
+const proxyAgent = require("./proxyAgent");
 
 const API_VERSION = "3.0.0"; // 对齐洛雪桌面版自定义源 API 版本
 // inited 握手超时：真实第三方源（尤其混淆过的）常在 init 阶段做多步服务端握手，
 // 10s 在弱网/代理环境下容易误判失败，放宽到 30s。
 const INIT_TIMEOUT = 30000;
 const CALL_TIMEOUT = 20000; // 单次 request action 超时
+
+// 代理配置由 main.js 注入（sourceHost 不该知道数据目录在哪）。默认关闭。
+// ⚠️ 源脚本的请求**必须**走代理：四平台的音频地址解析全经过这里，
+// 漏掉它的话用户开了代理照样连不上，等于功能没做（见 MEMORY「代理」一节）。
+let _proxy = { enabled: false, host: "", port: 0 };
+
+/** 由 main.js 在启动时与配置变更后调用 */
+function setProxy(proxy) {
+  _proxy = proxy && proxy.enabled ? proxy : { enabled: false, host: "", port: 0 };
+}
+
+/** 需要时给请求 options 挂上代理 agent（未启用、或目标在本机时原样返回） */
+function withProxy(options, url) {
+  return proxyAgent.withProxyOptions(options, proxyAgent.effectiveProxy(url, _proxy));
+}
 
 // ---------------- 脚本头部注释元数据 ----------------
 // 格式：/** @name xxx */ 或 /*! @name xxx */（第三方源常用压缩保留注释风格，两种都兼容）
@@ -94,14 +110,17 @@ function lxRequest(url, options = {}, callback) {
     if (payload && !headers["content-length"]) headers["content-length"] = payload.length;
 
     req = lib.request(
-      {
-        hostname: u.hostname,
-        port: u.port || (u.protocol === "https:" ? 443 : 80),
-        path: u.pathname + u.search,
-        method: (options.method || "GET").toUpperCase(),
-        headers,
-        timeout: options.timeout || 15000,
-      },
+      withProxy(
+        {
+          hostname: u.hostname,
+          port: u.port || (u.protocol === "https:" ? 443 : 80),
+          path: u.pathname + u.search,
+          method: (options.method || "GET").toUpperCase(),
+          headers,
+          timeout: options.timeout || 15000,
+        },
+        url
+      ),
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -297,4 +316,4 @@ class SourceInstance {
   }
 }
 
-module.exports = { SourceInstance, parseMeta, parseBody, API_VERSION };
+module.exports = { SourceInstance, parseMeta, parseBody, setProxy, API_VERSION };
