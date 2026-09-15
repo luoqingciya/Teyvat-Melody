@@ -2,7 +2,7 @@
 // 职责：spawn Python(Flask) 后端子进程、主窗口、系统托盘、单实例、
 //       透明桌面歌词窗口、IPC 路由（窗口控制 / 歌词推送 / Flask RPC 代理）。
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, Notification, nativeImage, dialog } = require("electron");
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -901,9 +901,6 @@ ipcMain.handle("online:search", async (_e, { keyword, sources, page }) => {
 const UPDATE_DIR = () => path.join(app.getPath("temp"), "TeyvatMelody-update");
 // 只允许从 GitHub 的发布域名下载，避免这段能力被当成任意下载器
 const UPDATE_URL_OK = /^https:\/\/(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)\//i;
-// 拉起安装向导后隔多久自动退出：留给渲染进程把「即将关闭」提示显示出来、
-// 以及让设置 / 播放进度正常落盘（退出走的是 app.quit()，会走 before-quit 收尾）。
-const QUIT_DELAY_MS = 1500;
 
 // 注：isInstalledBuild() / dataRoot() / installDir() 定义在文件开头 ——
 // 数据根目录的选址要用到「是否安装版」，而那必须在 app ready 之前完成。
@@ -991,16 +988,67 @@ ipcMain.handle("update:install", async (_e, { path: filePath, reveal }) => {
   if (err) return { ok: false, message: err };
   // 安装程序要替换 TeyvatMelody.exe 与 resources/ 下的文件，而**当前进程正持有这些句柄** ——
   // 不退出的话 NSIS 会卡在「文件被占用」或让用户手动关。这里主动退出。
-  // 延时是留给渲染进程把「即将关闭」提示显示出来，并让设置/播放进度正常落盘。
-  // 用 app.quit() 而非 app.exit()：前者会走 before-quit（杀后端、注销快捷键）。
+  //
+  // ⚠️ 早先这里是一个固定 1500ms 的 setTimeout，**实测没退出**：exe 有 93MB，
+  //    `shell.openPath` 返回时安装程序进程才刚起来，画完向导窗口要好几秒；
+  //    这期间我们的 before-quit 会 kill 后端，而 NSIS 也会反过来 taskkill 我们，
+  //    两边一起动手 → 安装程序自己先没了，用户只看到「软件没关」。
+  //    改法见 updater.installQuitDecision：等它**真的稳定运行**再退，而不是赌一个固定延时。
   if (plan.quitAfter) {
-    setTimeout(() => {
-      app.isQuiting = true;
-      app.quit();
-    }, QUIT_DELAY_MS);
+    watchInstallerThenQuit(full);
   }
   return { ok: true, willQuit: plan.quitAfter };
 });
+
+/**
+ * 等安装程序稳定运行后再退出本应用（不要用固定延时赌 —— 见 update:install 处的说明）。
+ *
+ * 采样方式用 `tasklist /FI "IMAGENAME eq <name>"`：
+ * 安装器 PID 拿不到（shell.openPath 只返回错误信息），但我们在下载时已经限定了
+ * 「同一个安装包只允许跑一个」，所以按映像名判定是可靠的。
+ */
+function watchInstallerThenQuit(installerPath) {
+  const imageName = path.basename(installerPath);
+  const startedAt = Date.now();
+  let seenWindow = false;
+
+  const isAlive = () =>
+    new Promise((resolve) => {
+      // 映像名来自下载目录、已过 basename + 白名单过滤，这里再加一层引号防护
+      execFile("tasklist", ["/FI", `IMAGENAME eq ${imageName}`, "/NH"], (e, stdout) => {
+        if (e) return resolve({ alive: false, hasWindow: false });
+        // 无匹配时 tasklist 输出「信息: 没有运行的任务匹配指定标准」之类的提示行，
+        // 不会含映像名；有匹配时每行以 "映像名称" 开头 → 直接找文件名最稳。
+        const alive = String(stdout || "").includes(imageName);
+        resolve({ alive, hasWindow: alive });
+      });
+    });
+
+  const tick = async () => {
+    const { alive, hasWindow } = await isAlive();
+    if (alive) seenWindow = true;
+    const decision = updater.installQuitDecision({
+      alive,
+      elapsedMs: Date.now() - startedAt,
+      hasWindow,
+      seenWindow,
+    });
+    if (decision === "quit") {
+      app.isQuiting = true;
+      app.quit();
+      return;
+    }
+    if (decision === "abort") {
+      // 安装程序压根没起来：别退，否则用户既没装上、界面也没了
+      console.error("[update] 安装程序未启动，已取消自动退出");
+      return;
+    }
+    setTimeout(tick, 500);
+  };
+
+  // 先让渲染进程把「即将关闭」提示显示出来，再开始盯安装程序
+  setTimeout(tick, 800);
+}
 
 // 用系统浏览器打开更新页 / 下载链接。
 // 只放行 https 且限定 GitHub 域名：该 URL 虽由主进程提供，仍收紧一层避免被当作任意跳板。

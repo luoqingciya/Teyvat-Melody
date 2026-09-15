@@ -107,4 +107,50 @@ function installAction(reveal) {
   return reveal ? { action: "reveal", quitAfter: false } : { action: "run", quitAfter: true };
 }
 
-module.exports = { checkForUpdate, isNewer, pickAssets, pickAssetFor, installAction, REPO, API_URL };
+/**
+ * 更新包被拉起后**隔多久退出**。
+ *
+ * 历史上这里是固定的 1500ms，结果**真的没退出**：exe 有 93MB，`shell.openPath` 返回时
+ * 安装程序**进程才刚起来**，要好几秒才画完向导窗口。这期间：
+ *   · 我们的 `before-quit` 会 `backendProc.kill()`；
+ *   · 而 NSIS 的 `allowOnlyOneInstallerInstance` 在升级路径上会**反复 taskkill 宿主应用**。
+ *
+ * 两边同时动手，安装程序自己先没的几率不低 —— 用户看到的表现就是
+ * 「向导弹出来了，但软件还开着，只能手动关掉它」。
+ *
+ * 所以判据不能是「固定睡多久」，而是**等安装程序真的稳定下来**：
+ * 先等它出现（有窗口且活过起始宽限期），再往后多留一段缓冲让它把文件解出来。
+ *
+ * @param {{alive:boolean, elapsedMs:number, hasWindow:boolean, seenWindow:boolean}} st 一次采样
+ * @returns {"wait"|"quit"|"abort"}
+ *   wait  = 安装程序刚起来，继续等
+ *   quit  = 它已经稳定运行（或一直没等到），现在退出本应用
+ *   abort = 用户放弃了/它根本没起来，**别退**，否则用户会莫名丢失界面
+ */
+const SPAWN_GRACE_MS = 1500; // 从拉起算起：至少活过这么久才算「真的起来了」
+const SETTLE_MS = 5000; // 有窗口之后再稳定运行这么久 → 可以退了
+const SPAWN_DEADLINE_MS = 20000; // 兜底：一直等不到也退，总不能让用户干等
+
+function installQuitDecision(st) {
+  const { alive, elapsedMs, hasWindow, seenWindow } = st || {};
+  if (!alive) {
+    // 从未出现过窗口就死了 → 安装程序没起来，此时退出等于把用户晾在原地
+    return seenWindow ? "quit" : "abort";
+  }
+  if (!seenWindow) return elapsedMs >= SPAWN_DEADLINE_MS ? "quit" : "wait";
+  return elapsedMs >= SPAWN_GRACE_MS + SETTLE_MS ? "quit" : "wait";
+}
+
+module.exports = {
+  checkForUpdate,
+  isNewer,
+  pickAssets,
+  pickAssetFor,
+  installAction,
+  installQuitDecision,
+  SPAWN_GRACE_MS,
+  SETTLE_MS,
+  SPAWN_DEADLINE_MS,
+  REPO,
+  API_URL,
+};

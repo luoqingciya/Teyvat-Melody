@@ -2,7 +2,17 @@
 //
 // 覆盖版本比较、下载项筛选、以及与 GitHub API 交互的三种结果（有新版 / 已最新 / 失败）。
 // 通过注入 fetchImpl 打桩，不依赖外网。
-const { checkForUpdate, isNewer, pickAssets, pickAssetFor, installAction } = require("../electron/updater");
+const {
+  checkForUpdate,
+  isNewer,
+  pickAssets,
+  pickAssetFor,
+  installAction,
+  installQuitDecision,
+  SPAWN_GRACE_MS,
+  SETTLE_MS,
+  SPAWN_DEADLINE_MS,
+} = require("../electron/updater");
 
 const ok = (name, cond, extra) => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${!cond && extra ? "  → " + extra : ""}`);
@@ -97,6 +107,35 @@ const RELEASE = {
     const revealPlan = installAction(true);
     ok("免安装版：只定位不运行", revealPlan.action === "reveal", JSON.stringify(revealPlan));
     ok("免安装版：绝不退出应用", revealPlan.quitAfter === false, JSON.stringify(revealPlan));
+
+    // ---- installQuitDecision：拉起安装包之后**什么时候**退 ----
+    // 真实缺陷：固定 1500ms 就退，但安装程序那时才刚起来（93MB 的 exe，画窗口要好几秒），
+    // 于是「软件没关」被用户报回来。判据改成「等它稳定运行」。
+    const st = (o) => ({ alive: true, elapsedMs: 0, hasWindow: true, seenWindow: true, ...o });
+
+    ok(
+      "刚拉起（安装程序还在起）→ 继续等，别急着退",
+      installQuitDecision(st({ elapsedMs: 100, seenWindow: false })) === "wait",
+      installQuitDecision(st({ elapsedMs: 100, seenWindow: false }))
+    );
+    ok(
+      "超过宽限期就退（不再依赖一个固定延时要恰好落在窗口之间）",
+      installQuitDecision(st({ elapsedMs: SPAWN_GRACE_MS - 1 })) === "wait" &&
+        installQuitDecision(st({ elapsedMs: SPAWN_GRACE_MS + SETTLE_MS })) === "quit"
+    );
+    ok(
+      "一直等不到窗口也有兜底（不能让用户干等）",
+      installQuitDecision(st({ elapsedMs: SPAWN_DEADLINE_MS + 1, alive: true, hasWindow: false, seenWindow: false })) === "quit"
+    );
+    ok(
+      "安装程序从未起来 → abort，别把用户晾在原地",
+      installQuitDecision(st({ alive: false, seenWindow: false })) === "abort" &&
+        installQuitDecision(st({ alive: false, seenWindow: false, elapsedMs: 3000 })) === "abort"
+    );
+    ok(
+      "安装程序起来后又退出去了（用户已放弃/已完成）→ 该退，别再留在前台",
+      installQuitDecision(st({ alive: false, seenWindow: true })) === "quit"
+    );
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
     process.exitCode = 1;
