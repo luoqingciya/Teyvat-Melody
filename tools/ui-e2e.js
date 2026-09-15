@@ -549,12 +549,24 @@ const skip = (name, why) => {
       //    （注意：这段是模板字符串里的代码，注释里也不能写反引号，否则会提前结束字符串。）
       const isOnlineRow = (r) => !!r.querySelector('.col-source .src-badge');
       const onlineRows = () => rows().filter(isOnlineRow).length;
-      const sourceCells = () => rows().map((r) => {
-        const b = r.querySelector('.src-badge');
-        return b ? b.textContent.trim() : (r.querySelector('.src-local') ? '本地' : '');
-      });
 
       const labels = chips().map((c) => c.textContent.replace(/\\s+/g, ' ').trim());
+      // ⚠️⚠️ 在线歌曲排在列表**最底部**（本地在前、在线在后），而列表是**虚拟滚动**的：
+      //    不在渲染窗口内的行根本不进 DOM。本地歌一多，末尾的在线歌就整批「消失」——
+      //    实测本地 25 首时窗口只渲染 25 行，2 首在线歌一行都没出现，
+      //    断言「全部音乐列出了在线歌曲」直接红（而功能其实是好的）。
+      //    所以凡是要检查在线歌曲的地方，**必须先把列表滚到底**再采集。
+      const scrollToBottom = async () => {
+        const box = document.querySelector('.song-scroll');
+        if (!box) return;
+        for (let i = 0; i < 40; i++) {
+          box.scrollTop = box.scrollHeight;
+          await new Promise((r) => setTimeout(r, 120));
+          // 到底后会出现在线歌（或本就没有在线歌）；松手前多等一轮让窗口渲染稳定
+          if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) break;
+        }
+        await new Promise((r) => setTimeout(r, 350));
+      };
       // ⚠️ 不能拿 rows().length 当「总数」：这个列表是**虚拟滚动**的，
       //    渲染出来的行数只反映当前窗口 + 当前筛选，不是全量。
       //    曲库小的时候恰好全部渲染、断言看着能过；歌一多就必然失配
@@ -567,50 +579,71 @@ const skip = (name, why) => {
         return m ? Number(m[1]) : null;
       };
       const allCount = chipCount('全部');
-      const allOnline = onlineRows();
       const hasSourceCol = !!document.querySelector('.col-source-h');
-      const sources = sourceCells();
-      // 音质列的文案（本地歌曲应显示短码率，而不是 "MP3 : 128000k · 44.1kHz" 这种探测直出）
+      // 滚到底再统计在线行，否则末尾的在线歌不在渲染窗口里
+      await scrollToBottom();
+      const allOnline = onlineRows();
       const qualities = rows().map((r) => r.querySelector('.col-quality')?.textContent.trim() || '');
       // 有了来源列之后，标题里的在线标记不应再出现（同一信息不重复表达）
       const inlineTags = rows().filter((r) => r.querySelector('.tag-online')).length;
+
+      // ⚠️ 来源列的核对**不要在「全部」这一档做**：本地在前、在线在后，
+      //    不管滚到顶还是滚到底，虚拟滚动都只能看到其中一部分。改用两个筛选态各自验证，
+      //    这样结论与滚动位置无关。
+      const sourceCells = () => rows().map((r) => {
+        const b = r.querySelector('.src-badge');
+        return b ? b.textContent.trim() : (r.querySelector('.src-local') ? '本地' : '');
+      });
 
       // 切到「仅在线」
       const onlyOnline = chips().find((c) => c.textContent.includes('仅在线'));
       if (onlyOnline) onlyOnline.click();
       await new Promise((r) => setTimeout(r, 400));
-      const onlineOnly = { rows: rows().length, onlineRows: onlineRows(), count: chipCount('仅在线') };
+      await scrollToBottom();
+      const onlineOnly = {
+        rows: rows().length,
+        onlineRows: onlineRows(),
+        count: chipCount('仅在线'),
+        sources: sourceCells(),
+      };
 
       // 切到「仅本地」
       const onlyLocal = chips().find((c) => c.textContent.includes('仅本地'));
       if (onlyLocal) onlyLocal.click();
       await new Promise((r) => setTimeout(r, 400));
-      const localOnly = { rows: rows().length, onlineRows: onlineRows(), count: chipCount('仅本地') };
+      await scrollToBottom();
+      const localOnly = {
+        rows: rows().length,
+        onlineRows: onlineRows(),
+        count: chipCount('仅本地'),
+        sources: sourceCells(),
+      };
 
       // 回到「全部」
       const all = chips().find((c) => /^全部/.test(c.textContent.trim()));
       if (all) all.click();
       await new Promise((r) => setTimeout(r, 300));
 
-      return { labels, allCount, allOnline, hasSourceCol, sources, onlineOnly, localOnly, qualities, inlineTags };
+      return { labels, allCount, allOnline, hasSourceCol, onlineOnly, localOnly, qualities, inlineTags };
     })()`);
     console.log("  全部音乐:", JSON.stringify(allView));
     ok("「全部音乐」有来源筛选条（全部 / 仅本地 / 仅在线）", (allView?.labels || []).length === 3, JSON.stringify(allView?.labels));
     ok("「全部音乐」有来源列", allView?.hasSourceCol === true);
     ok(
       "「全部音乐」列出了在线歌曲（本地+在线混排）",
-      allView?.allOnline > 0,
-      `在线行数=${allView?.allOnline} / 总行数=${allView?.allCount}`
+      allView?.allOnline > 0 && allView?.allCount > (allView?.localOnly?.count ?? 0),
+      `滚到底后在线行数=${allView?.allOnline} / 全部=${allView?.allCount} / 仅本地=${allView?.localOnly?.count}`
     );
+    // 来源列的口径用两个筛选态分别验证（「全部」里本地/在线分居首尾，虚拟滚动看不到全貌）
     ok(
       "本地歌曲的来源列标为「本地」",
-      (allView?.sources || []).includes("本地"),
-      JSON.stringify(allView?.sources)
+      (allView?.localOnly?.sources || []).includes("本地"),
+      JSON.stringify(allView?.localOnly?.sources)
     );
     ok(
       "在线歌曲的来源列标出平台名（不是「本地」）",
-      (allView?.sources || []).some((s) => s && s !== "本地"),
-      JSON.stringify(allView?.sources)
+      (allView?.onlineOnly?.sources || []).some((s) => s && s !== "本地"),
+      JSON.stringify(allView?.onlineOnly?.sources)
     );
     ok(
       "「仅在线」只留在线歌曲",
