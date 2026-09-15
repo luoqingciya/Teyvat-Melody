@@ -131,7 +131,7 @@ const rootEl = ref(null);
 const px = ref(0);
 const py = ref(0);
 
-const MENU_W = 210;
+const MENU_W = 218;
 const MENU_H = 320;
 const GAP = 6;
 
@@ -244,7 +244,7 @@ onBeforeUnmount(detachGlobalNow);
 .song-ctx {
   position: fixed;
   z-index: 600;
-  width: 210px;
+  width: 218px;
   padding: var(--space-2);
   border-radius: var(--radius-lg);
   border: 1px solid var(--teyvat-card-border);
@@ -317,19 +317,27 @@ onBeforeUnmount(detachGlobalNow);
   color: var(--teyvat-text-secondary);
 }
 .song-ctx__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: grid;
+  /* 固定 3 列等宽，而不是 flex-wrap 让内容自己撑：
+     flex 下各档文案宽度不一（自动 / 24bit 长短差别大），换行后第二行只有一两个、
+     参差不齐看着「挤」。等分列后每行都对齐，几档都整齐，也不必挑最长文案对齐。 */
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 5px;
   padding: 0 var(--space-3) var(--space-2);
 }
 .quality-chip {
-  padding: 3px 9px;
+  padding: 4px 6px;
   font-size: 11px;
+  line-height: 1.3;
   border-radius: var(--radius-full);
   border: 1px solid var(--teyvat-card-border);
   background: rgba(255, 255, 255, 0.06);
   color: var(--teyvat-text-secondary);
   cursor: pointer;
+  /* 格子是等宽的，文案超长时省略而不是撑破布局（故 qualityLabel 的文案也要够短） */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 .quality-chip:hover {

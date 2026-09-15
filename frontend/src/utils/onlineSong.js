@@ -135,7 +135,9 @@ export function decorateSongs(list) {
 export function qualityLabel(q) {
   const s = String(q || "").trim();
   if (!s) return "自动";
-  const map = { flac24bit: "FLAC 24bit", flac: "FLAC", "320k": "320K", "128k": "128K", "192k": "192K", "256k": "256K", hires: "Hi-Res", atmos: "Atmos", master: "Master" };
+  // ⚠️ 文案要短：右键菜单里音质选项是等宽网格（每格约 56px），
+  //    "FLAC 24bit" 会被截成 "FLAC …"，看不全还难看。列表音质列本来也只放短码。
+  const map = { flac24bit: "24bit", flac: "FLAC", "320k": "320K", "128k": "128K", "192k": "192K", "256k": "256K", hires: "Hi-Res", atmos: "Atmos", master: "Master" };
   return map[s.toLowerCase()] || s.toUpperCase();
 }
 
