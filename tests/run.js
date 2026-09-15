@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { pathToFileURL } = require("url");
 
 const dir = __dirname;
 const files = fs
@@ -15,11 +16,18 @@ if (!files.length) {
   process.exit(1);
 }
 
+// 用 ESM loader 把前端的 `@/` 别名补上（Node 原生不认 Vite 的别名）。
+// 这样测试可以直接 import 真实的 store，而不必为测试改生产代码的导入写法。
+// 见 tests/alias-loader.mjs 的说明。
+const aliasRegister = path.join(dir, "register-alias.mjs");
+
 let failed = 0;
 const crashed = [];
 for (const f of files) {
   console.log(`\n===== ${f} =====`);
-  const r = spawnSync(process.execPath, [path.join(dir, f)], { stdio: "inherit" });
+  const r = spawnSync(process.execPath, ["--import", pathToFileURL(aliasRegister).href, path.join(dir, f)], {
+    stdio: "inherit",
+  });
   if (r.status !== 0) {
     failed++;
     // 区分「断言失败」和「文件根本没跑起来」：后者没有 FAIL 行，只体现为计数少 1，

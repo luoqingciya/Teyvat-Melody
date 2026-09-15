@@ -5,7 +5,7 @@
 // 的统一查找池（最近播放反查、启动恢复队列都用它，否则在线条目会被静默丢掉）。
 import { defineStore } from "pinia";
 import { useApi } from "@/composables/useApi";
-import { decorateSongs, isOnlineSong } from "@/utils/onlineSong";
+import { decorateSongs } from "@/utils/onlineSong";
 
 export const useLibraryStore = defineStore("library", {
   state: () => ({
@@ -52,14 +52,46 @@ export const useLibraryStore = defineStore("library", {
       const res = await useApi().loadOnlineLibrary();
       if (res?.data) this.onlineSongs = decorateSongs(res.data);
     },
-    /** 切换收藏，同步更新歌曲列表与收藏列表。
-     *  在线歌曲需先入库拿到整数 id（由调用方保证，见 useOnlineLibrary.ensureRegistered）。 */
+    /**
+     * 切换收藏，同步更新歌曲列表与收藏列表。
+     * 在线歌曲需先入库拿到整数 id（由调用方保证，见 useOnlineLibrary.ensureRegistered）。
+     *
+     * ⚠️ 这里刻意**不做全量重拉**（旧实现每次点击都 loadFavorites + loadOnlineSongs）：
+     *    `/api/online/library` 没有分页，一次返回全部已入库在线歌曲，
+     *    全量重拉 + 全量 decorateSongs 重算，在收藏了几百首在线歌之后，
+     *    **每点一次爱心都是一次全量往返**。后端 toggle 已经返回切换后的状态，
+     *    所以就地改那一条即可 —— 语义完全等价，代价从 O(全库) 降到 O(1)。
+     */
     async toggleFavorite(song) {
       const res = await useApi().toggleFavorite(song.id);
       const fav = res?.data?.favorite ?? false;
+
+      // 就地更新三个可能持有这首歌曲的列表（同一个 id 可能同时出现在多处）
+      this._patchFavorite(song.id, fav);
       song.favorite = fav ? 1 : 0;
-      await Promise.all([this.loadFavorites(), isOnlineSong(song) ? this.loadOnlineSongs() : null]);
+
+      // 收藏列表增删：从收藏里取消 → 移除；新收藏 → 补进去（元素取自己知的实例，
+      // 避免同一首歌在收藏页与曲库页变成两个不同对象）。
+      if (fav) {
+        const known = this._findById(song.id);
+        if (known && !this.favorites.some((s) => s.id === song.id)) {
+          this.favorites = [...this.favorites, known];
+        }
+      } else {
+        this.favorites = this.favorites.filter((s) => s.id !== song.id);
+      }
       return fav;
+    },
+    /** 在本地曲库 / 在线曲库中按 id 反查（用于收藏后就地补进收藏列表） */
+    _findById(id) {
+      return this.songList.find((s) => s.id === id) || this.onlineSongs.find((s) => s.id === id) || null;
+    },
+    /** 把某个 id 的收藏标记就地写到所有持有它的列表里（不重拉数据） */
+    _patchFavorite(id, fav) {
+      const apply = (list) => list.map((s) => (s.id === id ? { ...s, favorite: fav ? 1 : 0 } : s));
+      this.songList = apply(this.songList);
+      this.onlineSongs = apply(this.onlineSongs);
+      this.favorites = apply(this.favorites);
     },
     setKeyword(kw) {
       this.filterKeyword = kw;
