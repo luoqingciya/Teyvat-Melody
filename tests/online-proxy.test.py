@@ -358,6 +358,36 @@ def main() -> int:
         json.dumps(st),
     )
 
+    # ---- 分类清理：只清一类，不动另一类 ----
+    # 音频动辄几十 MB、歌词只有几十 KB，性质完全不同；用户常常只想清其中一类
+    #（比如歌词对不上想重取，却不想把已缓存的音频也扔掉）。
+    online_cache.clear()
+    client.get(f"/api/online/proxy?url={song}&source=kw&key=kw:kind:320k").get_data()
+    (lyr_dir / "keep1.json").write_text('{"lines":[]}', "utf-8")
+    st = online_cache.stats()
+    ok("分类清理前：音频与歌词都在", st["bytes"] > 0 and st["lyricsFiles"] == 1, json.dumps(st))
+
+    r28 = client.post("/api/online/cache/clear", json={"kind": "lyrics"})
+    st = online_cache.stats()
+    ok("只清歌词：歌词归零", st["lyricsFiles"] == 0 and st["lyricsBytes"] == 0, json.dumps(st))
+    ok("⚠️ 只清歌词：音频原封不动", st["bytes"] == len(PAYLOAD), json.dumps(st))
+    ok(
+        "只清歌词：返回体带上清理类型",
+        r28.get_json()["data"]["kind"] == "lyrics",
+        json.dumps(r28.get_json()),
+    )
+
+    # 再把歌词放回去，验「只清音频」
+    (lyr_dir / "keep2.json").write_text('{"lines":[]}', "utf-8")
+    r29 = client.post("/api/online/cache/clear", json={"kind": "audio"})
+    st = online_cache.stats()
+    ok("只清音频：音频归零", st["bytes"] == 0, json.dumps(st))
+    ok("⚠️ 只清音频：歌词不受影响", st["lyricsFiles"] == 1 and st["lyricsBytes"] > 0, json.dumps(st))
+
+    r30 = client.post("/api/online/cache/clear", json={"kind": "bogus"})
+    ok("非法的 kind → 400（不静默当成清全部）", r30.status_code == 400, str(r30.status_code))
+    ok("缺省 kind 仍然清全部", online_cache.clear()["kind"] == "all")
+
     # ---- 在线歌曲入库：收藏 / 歌单 / 下载 ----
     # 目标：在线歌曲只需在 songs 表里占一行，就能复用既有收藏与歌单机制
     from app.services import library_service

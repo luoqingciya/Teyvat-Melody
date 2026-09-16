@@ -500,18 +500,50 @@
               </select>
             </div>
 
-            <div class="settings__row">
+            <!-- 分类清理：音频与歌词性质完全不同（几十 MB vs 几十 KB），
+                 用户常常只想清其中一类（例如歌词对不上想重取，但不想丢掉已缓存的音频）。 -->
+            <div class="settings__row settings__row--col">
+              <span class="settings__subhead">{{ t("settings.cacheAudioGroup") }}</span>
               <span class="settings__tip">
-                {{ t("settings.cacheUsed", { size: formatBytes(cache.bytes) }) }}<template
+                {{ t("settings.cacheAudioDetail", { n: cache.files || 0, size: formatBytes(cache.bytes) }) }}<template
                   v-if="cache.partialBytes"
                 >{{ t("settings.cachePartial", { size: formatBytes(cache.partialBytes) }) }}</template>
-                <template v-if="cache.lyricsBytes"
-                >　·　{{ t("settings.cacheLyrics", { n: cache.lyricsFiles || 0, size: formatBytes(cache.lyricsBytes) }) }}</template>
+              </span>
+              <div class="settings__actions">
+                <button
+                  class="ui-btn ui-btn--ghost settings__action"
+                  :disabled="!cache.bytes"
+                  @click="onClearCache('audio')"
+                >
+                  {{ t("settings.cacheClearAudio") }}
+                </button>
+              </div>
+            </div>
+
+            <div class="settings__row settings__row--col">
+              <span class="settings__subhead">{{ t("settings.cacheOtherGroup") }}</span>
+              <span class="settings__tip">
+                {{ t("settings.cacheLyricsDetail", { n: cache.lyricsFiles || 0, size: formatBytes(cache.lyricsBytes) }) }}
+              </span>
+              <div class="settings__actions">
+                <button
+                  class="ui-btn ui-btn--ghost settings__action"
+                  :disabled="!cache.lyricsBytes"
+                  @click="onClearCache('lyrics')"
+                >
+                  {{ t("settings.cacheClearLyrics") }}
+                </button>
+              </div>
+            </div>
+
+            <div class="settings__row">
+              <span class="settings__tip">
+                {{ t("settings.cacheUsedTotal", { size: formatBytes(cache.totalBytes) }) }}
               </span>
               <button
                 class="ui-btn ui-btn--ghost settings__action"
                 :disabled="!cache.totalBytes"
-                @click="onClearCache"
+                @click="onClearCache('all')"
               >
                 {{ t("settings.cacheClear") }}
               </button>
@@ -946,8 +978,9 @@ async function onCacheLimit(value) {
   if (data) cache.value = data;
 }
 
-async function onClearCache() {
-  const r = await clearOnlineCache();
+/** 清空缓存。kind: "all"（全部）/ "audio"（只音频）/ "lyrics"（只歌词） */
+async function onClearCache(kind = "all") {
+  const r = await clearOnlineCache(kind);
   await loadCache();
   if (r) {
     cacheMsg.value = t("settings.cacheCleared", { size: formatBytes(r.freed) });
@@ -1358,6 +1391,13 @@ onUnmounted(() => clearInterval(cacheTimer));
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
+}
+/* 分组小标题（缓存分区：资源缓存 / 其他缓存） */
+.settings__subhead {
+  font-size: 12px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--teyvat-text-secondary);
+  letter-spacing: 0.02em;
 }
 /* 优先音质多选：一行排开，每项是「小开关 + 音质名」 */
 .settings__quals {

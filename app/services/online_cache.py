@@ -347,11 +347,21 @@ def stats() -> dict:
     }
 
 
-def clear() -> dict:
-    """清空缓存（音频 + 歌词，含未完成的临时文件）。"""
+def clear(kind: str = "all") -> dict:
+    """清空缓存。
+
+    `kind`：`audio` 只清音频、`lyrics` 只清歌词、其它/缺省清全部。
+
+    ⚠️ 分开清是有必要的：两者性质完全不同 —— 音频动辄几十 MB（容量上限只约束它），
+    歌词只有几十 KB 但份数多。用户常常只想清其中一类（比如歌词对不上想重取，
+    却不想把几十 MB 的音频也扔掉）。
+    """
+    dirs = {"audio": [cache_dir()], "lyrics": [lyrics_dir()]}.get(kind)
+    if dirs is None:
+        dirs = [cache_dir(), lyrics_dir()]
     removed = 0
     freed = 0
-    for d in (cache_dir(), lyrics_dir()):
+    for d in dirs:
         if not d.is_dir():
             continue
         for p in d.glob("*"):
@@ -361,4 +371,4 @@ def clear() -> dict:
                 removed += 1
             except OSError:
                 pass
-    return {"removed": removed, "freed": freed}
+    return {"removed": removed, "freed": freed, "kind": kind}

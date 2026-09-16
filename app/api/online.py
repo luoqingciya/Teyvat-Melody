@@ -352,8 +352,15 @@ def cache_stats():
 
 @bp.post("/cache/clear")
 def cache_clear():
-    """清空缓存（含未完成的临时文件）。"""
-    return jsonify({"code": 200, "message": "success", "data": online_cache.clear()})
+    """清空缓存（含未完成的临时文件）。
+
+    请求体可选 `{"kind": "audio" | "lyrics"}`：只清其中一类；缺省清全部。
+    """
+    data = request.get_json(silent=True) or {}
+    kind = str(data.get("kind") or "all").strip().lower()
+    if kind not in ("all", "audio", "lyrics"):
+        return _err("kind must be all/audio/lyrics", 400)
+    return jsonify({"code": 200, "message": "success", "data": online_cache.clear(kind)})
 
 
 @bp.post("/cache/config")

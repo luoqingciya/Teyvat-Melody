@@ -97,8 +97,9 @@ export function useApi() {
   function getOnlineCache() {
     return jget("/api/online/cache").then((res) => res?.data ?? null);
   }
-  function clearOnlineCache() {
-    return jpost("/api/online/cache/clear").then((res) => res?.data ?? null);
+  /** 清空在线缓存。kind: "all"（缺省）/ "audio" / "lyrics" —— 分类清理用 */
+  function clearOnlineCache(kind = "all") {
+    return jpost("/api/online/cache/clear", { kind }).then((res) => res?.data ?? null);
   }
   function setOnlineCacheConfig(patch) {
     return jpost("/api/online/cache/config", patch).then((res) => res?.data ?? null);
