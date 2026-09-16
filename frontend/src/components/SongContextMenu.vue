@@ -182,6 +182,16 @@ function onMenuKey(e) {
   if (!list.length) return;
   const idx = list.indexOf(document.activeElement);
 
+  // ⚠️ Esc 必须在这里也处理一次。原来只靠 attachGlobal() 挂在 window 上的监听，
+  // 而那是 `setTimeout(...,0)` 异步挂的 —— 一旦没挂上（或挂之前事件就派发了），
+  // 键盘用户打开菜单后就**再也关不掉**（点外部同样失效，因为走的是同一组监听）。
+  // 菜单打开时焦点就在菜单里，这条路径既直接又稳定。
+  if (e.key === "Escape") {
+    e.preventDefault();
+    emit("close");
+    return;
+  }
+
   if (e.key === "ArrowDown") {
     e.preventDefault();
     list[(idx + 1) % list.length]?.focus();

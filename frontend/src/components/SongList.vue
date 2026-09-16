@@ -118,7 +118,7 @@
       :quality="ctx.song?.quality || ''"
       :downloaded="ctx.song?.online ? online.isDownloaded(ctx.song) : false"
       :download-percent="ctxPercent"
-      @close="ctx.visible = false"
+      @close="closeCtxMenu"
       @play="playCtx"
       @play-next="playNextCtx"
       @add-queue="addQueueCtx"
@@ -132,7 +132,7 @@
     <PlaylistPickerModal
       :visible="picker.visible"
       :song="picker.song"
-      @close="picker.visible = false"
+      @close="closePicker"
     />
     <SongDetailModal
       :visible="detailVisible"
@@ -330,6 +330,18 @@ const detailSong = ref(null);
 const editVisible = ref(false);
 const editSong = ref(null);
 
+/**
+ * 关闭右键菜单。
+ *
+ * 抽成函数而不是在模板里写 `@close="ctx.visible = false"`：
+ * `ctx` 是 ref，模板里那种「对 ref 的属性赋值」的写法是否被编译成对 `.value` 的赋值，
+ * 取决于编译器对该绑定的类型判定 —— 一旦判成 maybe-ref，赋值就落在一个普通对象上，
+ * 界面**不会**关。这里统一走 `ctx.value`，与文件里其它关菜单的地方保持一致。
+ */
+function closeCtxMenu() {
+  ctx.value.visible = false;
+}
+
 function openContextMenu(e, song) {
   ctx.value = { visible: true, x: e.clientX, y: e.clientY, song };
 }
@@ -488,6 +500,11 @@ function localQualityShort(song) {
 
 // ---- 在线歌曲：加入歌单 / 换音质 / 下载 ----
 const picker = ref({ visible: false, song: null });
+
+/** 关闭歌单选择器。理由同 closeCtxMenu：不要在模板里对 ref 的属性赋值。 */
+function closePicker() {
+  picker.value.visible = false;
+}
 
 const ctxPercent = computed(() => {
   const p = ctx.value.song ? online.progressOf(ctx.value.song) : null;

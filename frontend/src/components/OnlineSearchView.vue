@@ -172,7 +172,7 @@
       :downloaded="ctx.song ? online.isDownloaded(ctx.song) : false"
       :download-percent="ctxPercent"
       online
-      @close="ctx.visible = false"
+      @close="closeCtxMenu"
       @play="playCtx"
       @play-next="playNextCtx"
       @add-queue="addQueueCtx"
@@ -185,7 +185,7 @@
     <PlaylistPickerModal
       :visible="picker.visible"
       :song="picker.song"
-      @close="picker.visible = false"
+      @close="closePicker"
     />
   </GlassCard>
 </template>
@@ -476,6 +476,16 @@ function downloadSong(song, quality) {
 // ---- 右键菜单 ----
 const ctx = ref({ visible: false, x: 0, y: 0, song: null });
 const picker = ref({ visible: false, song: null });
+
+/** 关闭右键菜单 / 歌单选择器。
+ *  ⚠️ 不要在模板里写 `ctx.visible = false`：`ctx` 是 ref，那种写法不会真正改到响应式对象，
+ *  结果是菜单/选择器**关不掉**（点外部、Esc、滚动全都失效）。统一走 .value。 */
+function closeCtxMenu() {
+  ctx.value.visible = false;
+}
+function closePicker() {
+  picker.value.visible = false;
+}
 
 const ctxPercent = computed(() => {
   const p = ctx.value.song ? online.progressOf(ctx.value.song) : null;
