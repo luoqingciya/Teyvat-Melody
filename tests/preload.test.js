@@ -105,6 +105,35 @@ const reactiveArr = (a) => new Proxy(a, {});
     await exposed.openDataDir();
     ok("openDataDir 走 app:openDataDir 通道", calls[calls.length - 1].channel === "app:openDataDir", calls[calls.length - 1].channel);
 
+    // 任务栏进度 / 阻止休眠：player store 会按播放状态频繁调用，必须存在且通道正确
+    ok("暴露 setTaskbarProgress 且路由到 taskbar:progress", typeof exposed.setTaskbarProgress === "function");
+    await exposed.setTaskbarProgress(0.5, true);
+    {
+      const c = calls[calls.length - 1];
+      ok("setTaskbarProgress 走 taskbar:progress 通道", c.channel === "taskbar:progress", c.channel);
+      ok("setTaskbarProgress 传了 ratio 与 paused", c.payload.ratio === 0.5 && c.payload.paused === true, JSON.stringify(c.payload));
+    }
+    ok("暴露 setPreventSleep 且路由到 power:preventSleep", typeof exposed.setPreventSleep === "function");
+    await exposed.setPreventSleep(true);
+    {
+      const c = calls[calls.length - 1];
+      ok("setPreventSleep 走 power:preventSleep 通道", c.channel === "power:preventSleep", c.channel);
+      ok("setPreventSleep 传了 enabled", c.payload.enabled === true, JSON.stringify(c.payload));
+    }
+
+    // 优先音质：第 4 个参数必须能带下去（漏传的话设置页勾了也没用）
+    ok("暴露 getOnlineUrl", typeof exposed.getOnlineUrl === "function");
+    await exposed.getOnlineUrl("kw", { songmid: "1" }, "320k", ["128k", "320k"]);
+    {
+      const c = calls[calls.length - 1];
+      ok("getOnlineUrl 走 online:getUrl 通道", c.channel === "online:getUrl", c.channel);
+      ok(
+        "getOnlineUrl 把优先音质列表带给主进程",
+        JSON.stringify(c.payload.preferredQualities) === JSON.stringify(["128k", "320k"]),
+        JSON.stringify(c.payload)
+      );
+    }
+
     ok("所有调用都经由 ipcRenderer.invoke", calls.length >= cases.length, `calls=${calls.length}`);
   } catch (e) {
     console.log(`FAIL  自检异常中断  → ${e.message}`);
