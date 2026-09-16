@@ -1,7 +1,7 @@
 // Teyvat Melody - Electron 主进程
 // 职责：spawn Python(Flask) 后端子进程、主窗口、系统托盘、单实例、
 //       透明桌面歌词窗口、IPC 路由（窗口控制 / 歌词推送 / Flask RPC 代理）。
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, Notification, nativeImage, dialog } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, Notification, nativeImage, dialog, powerSaveBlocker } = require("electron");
 const { spawn, execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -819,9 +819,9 @@ ipcMain.handle("source:reload", async (_e, { id }) => {
 
 // 在线歌曲取真实播放 URL：音质降级链 + 多源换源重试全部在主进程完成，
 // 渲染进程只拿到最终可播放的 CDN URL（失败时返回 message 供 toast 展示）。
-ipcMain.handle("online:getUrl", async (_e, { source, musicInfo, quality }) => {
+ipcMain.handle("online:getUrl", async (_e, { source, musicInfo, quality, preferredQualities }) => {
   try {
-    const r = await sourceManager.resolveMusicUrl(source, musicInfo || {}, quality);
+    const r = await sourceManager.resolveMusicUrl(source, musicInfo || {}, quality, preferredQualities);
     return { ok: true, ...r };
   } catch (e) {
     return { ok: false, message: e.message };
@@ -1248,6 +1248,56 @@ ipcMain.handle("mini:close", () => {
     mainWindow.webContents.send("mini:visibility", false);
   }
   return { ok: true, visible: false };
+});
+
+// ---------------- 任务栏进度 / 播放时阻止休眠 ----------------
+// 两件事都由渲染进程按播放状态驱动：它才知道当前进度与是否在播。
+
+// 任务栏图标上的进度条（Windows 任务栏 / macOS Dock 均支持）。
+// ratio: 0~1 显示进度；-1 清除。paused 时用 paused 模式让进度条变成「暂停」外观。
+ipcMain.handle("taskbar:progress", (_e, { ratio, paused } = {}) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const r = Number(ratio);
+  if (!Number.isFinite(r) || r < 0) {
+    mainWindow.setProgressBar(-1);
+    return { ok: true, cleared: true };
+  }
+  mainWindow.setProgressBar(Math.max(0, Math.min(1, r)), paused ? { mode: "paused" } : {});
+  return { ok: true };
+});
+
+// 播放时阻止系统休眠。
+// ⚠️ 用 `prevent-app-suspension` 而不是 `prevent-display-sleep`：
+//    前者只阻止「系统进入睡眠」，屏幕仍会正常熄灭；后者会让屏幕常亮。
+//    听歌时用户多半希望屏幕照常息屏，只是别让系统睡过去把音乐掐断。
+let sleepBlockerId = null;
+ipcMain.handle("power:preventSleep", (_e, { enabled } = {}) => {
+  try {
+    if (enabled) {
+      if (sleepBlockerId === null || !powerSaveBlocker.isStarted(sleepBlockerId)) {
+        sleepBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+      }
+    } else if (sleepBlockerId !== null) {
+      if (powerSaveBlocker.isStarted(sleepBlockerId)) powerSaveBlocker.stop(sleepBlockerId);
+      sleepBlockerId = null;
+    }
+    return { ok: true, active: sleepBlockerId !== null };
+  } catch (e) {
+    // 拿不到 blocker 不该影响播放，静默降级
+    return { ok: false, message: e.message };
+  }
+});
+
+// 退出前一定要放开，否则系统会一直以为「有程序要求别睡」
+app.on("before-quit", () => {
+  if (sleepBlockerId !== null && powerSaveBlocker.isStarted(sleepBlockerId)) {
+    try {
+      powerSaveBlocker.stop(sleepBlockerId);
+    } catch {
+      /* ignore */
+    }
+    sleepBlockerId = null;
+  }
 });
 
 // ---------------- 生命周期 ----------------

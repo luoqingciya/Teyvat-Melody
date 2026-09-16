@@ -54,8 +54,9 @@ api.removeSource = (id) => invoke("source:remove", { id });
 api.toggleSource = (id, enabled) => invoke("source:toggle", { id, enabled: !!enabled });
 api.reloadSource = (id) => invoke("source:reload", { id });
 // 在线歌曲播放：取真实音频 URL（音质降级 + 换源重试在主进程完成）
-api.getOnlineUrl = (source, musicInfo, quality) =>
-  invoke("online:getUrl", { source, musicInfo, quality });
+// preferredQualities：设置页的「优先音质」多选，只影响尝试顺序，不作过滤
+api.getOnlineUrl = (source, musicInfo, quality, preferredQualities) =>
+  invoke("online:getUrl", { source, musicInfo, quality, preferredQualities });
 // 在线搜索：可播放平台 + 关键词搜索（page 从 1 开始，翻页时递增）
 api.getOnlinePlatforms = () => invoke("online:platforms");
 api.searchOnline = (keyword, sources, page) => invoke("online:search", { keyword, sources, page: page || 1 });
@@ -81,6 +82,10 @@ api.openUpdatePage = (url) => invoke("update:open", { url });
 api.getProxy = () => invoke("proxy:get");
 api.setProxy = (cfg) => invoke("proxy:set", cfg || {});
 api.testProxy = (cfg) => invoke("proxy:test", cfg || {});
+// 任务栏进度：ratio 0~1 显示、-1 清除；paused 时进度条呈「暂停」外观
+api.setTaskbarProgress = (ratio, paused) => invoke("taskbar:progress", { ratio, paused: !!paused });
+// 播放时阻止系统休眠（只阻止系统挂起，不阻止屏幕熄灭）
+api.setPreventSleep = (enabled) => invoke("power:preventSleep", { enabled: !!enabled });
 // 监听迷你窗口可见性变化（迷你窗口 ✕ 关闭时同步主界面开关状态）
 api.onMiniVisibility = (cb) => {
   ipcRenderer.on("mini:visibility", (_e, v) => cb(v));

@@ -11,6 +11,32 @@ const CONFIG_FILE = "sources.json";
 // 音质降级链（高 → 低）：按源声明取最高可用音质，失败逐级降档
 const QUALITY_CHAIN = ["flac24bit", "flac", "320k", "128k"];
 
+/**
+ * 按「单曲偏好 → 全局优先音质 → 降级链 → 源声明的其它音质」排出尝试顺序（纯函数，便于单测）。
+ *
+ * ⚠️ 全局「优先音质」只调整**顺序**，不做过滤：未勾选的音质仍排在后面兜底。
+ *    否则用户少勾一个、而源恰好只提供那一个时，就会「搜得到却播不出来」——
+ *    一个偏好设置不该把播放本身弄挂。
+ *
+ * @param {string[]} qualitys 该平台在启用源中声明支持的音质（顺序不保证）
+ * @param {string} [preferred] 单曲偏好音质（用户对该歌单独选过）
+ * @param {string[]} [preferredList] 全局优先音质多选
+ */
+function buildQualityChain(qualitys, preferred, preferredList) {
+  const supported = Array.isArray(qualitys) ? qualitys : [];
+  const chain = [];
+  const push = (q) => {
+    if (supported.includes(q) && !chain.includes(q)) chain.push(q);
+  };
+  if (preferred && supported.includes(preferred)) chain.push(preferred);
+  const prefer = Array.isArray(preferredList) && preferredList.length ? new Set(preferredList) : null;
+  if (prefer) for (const q of QUALITY_CHAIN) if (prefer.has(q)) push(q);
+  for (const q of QUALITY_CHAIN) push(q);
+  for (const q of supported) push(q);
+  if (!chain.length) chain.push(preferred || "128k"); // 源未声明音质时的兜底
+  return chain;
+}
+
 class SourceManager {
   /** @param {string} rootDir 软件根目录（main.js 的 dataRoot()） */
   constructor(rootDir) {
@@ -230,24 +256,17 @@ class SourceManager {
    * @param {string} sourceKey 平台 key（kw/kg/tx/wy/mg/local）
    * @param {object} musicInfo 平台歌曲信息（应含全量平台 ID：hash/songmid/rid/id/mid 等）
    * @param {string} [preferred] 用户偏好音质；未声明时忽略
+   * @param {string[]} [preferredList] 全局「优先音质」多选（设置页）。勾选的按降级链顺序排在
+   *   **最前**，未勾选的仍排在后面兜底 —— 这样即使勾选的音质源都提供不了，也不会直接播不出来。
    * @returns {Promise<{url:string, quality:string, sourceId:string, sourceName:string}>}
    */
-  async resolveMusicUrl(sourceKey, musicInfo, preferred) {
+  async resolveMusicUrl(sourceKey, musicInfo, preferred, preferredList) {
     const { qualitys, actions } = this.capabilitiesFor(sourceKey);
     if (!actions.includes("musicUrl")) {
       throw new Error(`没有启用的源支持平台「${sourceKey}」的 musicUrl`);
     }
 
-    // 偏好优先，其余按降级链；源声明的非标准音质排在最后（尽量仍能播）
-    const chain = [];
-    if (preferred && qualitys.includes(preferred)) chain.push(preferred);
-    for (const q of QUALITY_CHAIN) {
-      if (qualitys.includes(q) && !chain.includes(q)) chain.push(q);
-    }
-    for (const q of qualitys) {
-      if (!chain.includes(q)) chain.push(q);
-    }
-    if (!chain.length) chain.push(preferred || "128k"); // 源未声明音质时的兜底
+    const chain = buildQualityChain(qualitys, preferred, preferredList);
 
     const errors = [];
     for (const quality of chain) {
@@ -294,4 +313,4 @@ class SourceManager {
   }
 }
 
-module.exports = { SourceManager };
+module.exports = { SourceManager, buildQualityChain, QUALITY_CHAIN };
