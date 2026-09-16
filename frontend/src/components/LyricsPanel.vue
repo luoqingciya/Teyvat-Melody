@@ -12,7 +12,21 @@
           :class="{ 'lyrics-line-wrap--active': i === activeIndex }"
           :style="{ height: LINE_HEIGHT + 'px' }"
         >
-          <p class="lyrics-line">{{ row.main }}</p>
+          <p class="lyrics-line">
+            <template v-if="i === activeIndex && activeWordSpans.length">
+              <span
+                v-for="(w, wi) in activeWordSpans"
+                :key="wi"
+                :class="{
+                  'ly-word--done': w.frac >= 1,
+                  'ly-word--pending': w.frac <= 0,
+                  'ly-word--partial': w.frac > 0 && w.frac < 1,
+                }"
+                :style="w.frac > 0 && w.frac < 1 ? { '--p': w.frac * 100 + '%' } : null"
+              >{{ w.text }}</span>
+            </template>
+            <template v-else>{{ row.main }}</template>
+          </p>
           <p v-if="i === activeIndex && row.sub" class="lyrics-sub">{{ row.sub }}</p>
         </div>
       </div>
@@ -25,6 +39,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { useConfigStore } from "@/stores/config";
 import { useI18n } from "@/utils/i18n";
+import { buildWordSpans } from "@/utils/karaokeWords";
 
 const props = defineProps({
   lines: { type: Array, default: () => [] },
@@ -56,7 +71,8 @@ function splitMainSub(text) {
 const rows = computed(() =>
   props.lines.map((l) => {
     const [main, sub] = splitMainSub(l.text);
-    return { t: l.t, main, sub: config.showTranslation ? sub : "" };
+    // words 原样带着：只有当前行会用到，供逐字高亮
+    return { t: l.t, main, sub: config.showTranslation ? sub : "", words: l.words || null };
   })
 );
 
@@ -70,6 +86,20 @@ const activeIndex = computed(() => {
     else break;
   }
   return idx;
+});
+
+/**
+ * 当前行的逐字分段（仅在开启逐字且该行确有 words 时非空）。
+ *
+ * 语义与桌面歌词（electron/lyrics.html 的 wordsKaraokeHtml）保持一致：
+ * 逐字时间轴来自 KRC / lxlyric 解析（`{t, d, text}`），字内再按**该字自身时长**
+ * 做渐变，高亮连续推进而不是整字跳变。没有 words 的歌词源会走原来的整行高亮。
+ */
+const activeWordSpans = computed(() => {
+  if (!config.karaokeInPanel) return [];
+  const row = rows.value[activeIndex.value];
+  if (!row || !row.words || !row.words.length) return [];
+  return buildWordSpans(row.words, props.currentTime + (props.offset || 0) / 1000);
 });
 
 const scrollOffset = computed(() => {
@@ -129,6 +159,24 @@ onMounted(() => {
   color: var(--teyvat-gold);
   transform: scale(1.05);
   font-weight: var(--font-weight-semibold);
+}
+/* 逐字高亮：已唱完=金色、未唱=次要色、正在唱=字内渐变（左金右灰，随进度推进）。
+   与桌面歌词同一套语义（见 electron/lyrics.html）。 */
+.ly-word--done {
+  color: var(--teyvat-gold);
+}
+.ly-word--pending {
+  color: var(--teyvat-text-secondary);
+}
+.ly-word--partial {
+  background: linear-gradient(
+    90deg,
+    var(--teyvat-gold) var(--p, 0%),
+    var(--teyvat-text-secondary) var(--p, 0%)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .lyrics-sub {
   margin: 0;

@@ -14,6 +14,7 @@ import { useLibraryStore } from "@/stores/library";
 import { useApi } from "@/composables/useApi";
 import { getProgress, saveProgress, clearProgress } from "@/utils/playbackProgress";
 import { saveLastQueue, loadLastQueue, clearLastQueue } from "@/utils/lastQueue";
+import { autoSkipDecision } from "@/utils/autoSkip";
 import { toastError } from "@/utils/toast";
 import {
   buildMusicInfo,
@@ -29,6 +30,13 @@ let onlineLoadToken = 0;
 let lyricToken = 0;
 // 切换音质后要恢复到的播放位置（非响应式，避免进入 Pinia state）
 let pendingSeek = 0;
+// 任务栏进度上次上报的整数百分比（-1 表示已清除）—— timeupdate 每秒约 4 次，
+// 逐次发 IPC 太碎，只在百分比真的变化时才发。
+let lastTaskbarPct = -1;
+// 当前是否已让主进程阻止休眠（避免重复发同一条指令）
+let preventSleepOn = false;
+// 连续播放失败计数：整表都坏时（音乐目录被移走等）不能无限自动切歌
+let consecutiveErrors = 0;
 
 // 睡眠定时非响应式计时器句柄（避免进入 Pinia state）
 let sleepTimerId = 0;
@@ -112,13 +120,27 @@ export const usePlayerStore = defineStore("player", {
         this.progress = audio.currentTime;
         this._persistProgress();
         this._maybeSkipSilence();
+        this._syncSystemState();
       });
       audio.addEventListener("loadedmetadata", () => {
         this.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
       });
-      audio.addEventListener("play", () => (this.isPlaying = true));
-      audio.addEventListener("pause", () => (this.isPlaying = false));
+      audio.addEventListener("play", () => {
+        this.isPlaying = true;
+        this._syncSystemState(true);
+      });
+      audio.addEventListener("pause", () => {
+        this.isPlaying = false;
+        this._syncSystemState(true);
+      });
       audio.addEventListener("ended", () => this._onEnded());
+      // 真的开始出声了 → 重置连续失败计数（用 playing 而不是 play：
+      // play 只是「请求播放」，数据还没到手，不能算成功）
+      audio.addEventListener("playing", () => {
+        consecutiveErrors = 0;
+      });
+      // 播放出错：见 _onAudioError 的说明（这条以前完全没有）
+      audio.addEventListener("error", () => this._onAudioError());
 
       // 应用记忆的音量
       audio.volume = this.volume;
@@ -386,7 +408,10 @@ export const usePlayerStore = defineStore("player", {
         if (!api || typeof api.getOnlineUrl !== "function") {
           throw new Error("当前环境不支持在线播放（缺少主进程桥接）");
         }
-        const r = await api.getOnlineUrl(song.source, buildMusicInfo(song), song.quality);
+        // ⚠️ 必须把响应式数组摊平成普通数组再跨桥：Pinia 的数组是 Proxy，
+        //    结构化克隆在「主世界 → preload」那道边界就会失败（An object could not be cloned）。
+        const preferred = Array.from(cfg.preferredQualities || []);
+        const r = await api.getOnlineUrl(song.source, buildMusicInfo(song), song.quality, preferred);
         if (token !== onlineLoadToken) return; // 已被后续切歌取代，丢弃结果
         if (!r || !r.ok || !r.url) throw new Error(r?.message || "未获取到播放地址");
         this.onlineQuality = r.quality || "";
@@ -493,8 +518,77 @@ export const usePlayerStore = defineStore("player", {
       else audio.addEventListener("loadedmetadata", doSeek, { once: true });
     },
 
+    /** 供设置页在「任务栏进度 / 阻止休眠」开关变化后立刻生效（强制同步一次） */
+    syncSystemState() {
+      this._syncSystemState(true);
+    },
+
+    /**
+     * 把播放状态同步给系统层：**任务栏进度** + **阻止休眠**。
+     *
+     * ⚠️ 必须节流：timeupdate 每秒约 4 次，逐次发 IPC 太碎 —— 只在整数百分比变化时才发。
+     * 暂停 / 停止 / 切歌时用 `force=true` 强推一次（百分比可能没变，但状态变了）。
+     */
+    _syncSystemState(force = false) {
+      const api = window.pywebview?.api;
+      if (!api) return;
+      const cfg = useConfigStore();
+
+      if (typeof api.setTaskbarProgress === "function") {
+        const total = Number(this.duration) || 0;
+        const usable = cfg.taskbarProgress && this.currentSong && total > 0;
+        if (!usable) {
+          // 无歌 / 时长未知 / 用户关掉了 → 清除进度条（只在确实显示着时清）
+          if (force || lastTaskbarPct !== -1) {
+            lastTaskbarPct = -1;
+            api.setTaskbarProgress(-1).catch(() => {});
+          }
+        } else {
+          const ratio = Math.max(0, Math.min(1, this.progress / total));
+          const pct = Math.round(ratio * 100);
+          if (force || pct !== lastTaskbarPct) {
+            lastTaskbarPct = pct;
+            api.setTaskbarProgress(ratio, !this.isPlaying).catch(() => {});
+          }
+        }
+      }
+
+      // 阻止休眠：只有「正在播放」时才要求系统别睡
+      if (typeof api.setPreventSleep === "function") {
+        const want = !!cfg.preventSleep && this.isPlaying;
+        if (force || want !== preventSleepOn) {
+          preventSleepOn = want;
+          api.setPreventSleep(want).catch(() => {});
+        }
+      }
+    },
+
+    /**
+     * 播放出错（本地文件损坏 / 被删、网络中断、格式不支持…）。
+     *
+     * ⚠️ 这条监听以前**完全没有** —— 在线链路的重试只覆盖「解析播放地址失败」，
+     *    而「地址拿到了却拉不到流」「本地文件读不出来」一直没人兜，用户只能手动点下一首。
+     *
+     * ⚠️ 必须设连续失败上限：整个列表都坏时（例如音乐目录被移走、代理挂了），
+     *    无上限地自动切歌会在几秒内把队列跑完并刷满提示。
+     */
+    _onAudioError() {
+      const song = this.currentSong;
+      // 切歌瞬间会清空 src，可能触发一次无意义的 error —— 没有当前歌就不算失败
+      if (!song) return;
+      consecutiveErrors += 1;
+      const { skip, warn } = autoSkipDecision({
+        enabled: !!useConfigStore().autoSkipOnError,
+        consecutiveErrors,
+        title: song.title,
+      });
+      if (warn) toastError(warn);
+      if (skip) this.next();
+    },
+
     /** 把当前歌曲进度持久化（节流到整秒；临近结尾不记，避免“播完还残留断点”） */
     _persistProgress() {
+      if (!useConfigStore().rememberProgress) return; // 用户关掉了「记住播放进度」
       const song = this.currentSong;
       if (!song || song.id == null) return;
       const audio = getAudio();
@@ -533,6 +627,7 @@ export const usePlayerStore = defineStore("player", {
 
     /** 恢复某首歌曲上次的进度（精确到秒）。需在 audio.src 变更后调用。 */
     _restoreProgress(songId) {
+      if (!useConfigStore().rememberProgress) return; // 关掉记忆就不该再恢复
       const saved = getProgress(songId);
       if (!saved || saved < 1) return;
       const song = this.currentSong;
@@ -619,6 +714,7 @@ export const usePlayerStore = defineStore("player", {
       if (sleepAfterTrack) {
         getAudio().pause();
         this._clearSleep();
+        this._syncSystemState(true);
         return;
       }
       if (this.playMode === "single") {
@@ -627,8 +723,18 @@ export const usePlayerStore = defineStore("player", {
         audio.play();
       } else if (this.queue.length) {
         const config = useConfigStore();
-        if (config.autoplayNext) this._loadAt(this._nextIndex(+1));
+        if (config.autoplayNext) {
+          this._loadAt(this._nextIndex(+1));
+        } else {
+          // 播完且不再续播：状态必须落地。否则 isPlaying 一直是 true ——
+          // 界面显示“播放中”，而且**阻止休眠会一直生效**，系统再也睡不了。
+          this.isPlaying = false;
+        }
+      } else {
+        this.isPlaying = false;
       }
+      // 结束/续播都要同步一次（进度条与休眠状态都可能需要变）
+      this._syncSystemState(true);
     },
   },
 });

@@ -8,6 +8,7 @@
 //   · 平台音质声明（源脚本 inited 上报）缓存在模块级，多处 UI 共用一份。
 import { computed, ref } from "vue";
 import { useApi } from "@/composables/useApi";
+import { useConfigStore } from "@/stores/config";
 import { useLibraryStore } from "@/stores/library";
 import { usePlayerStore } from "@/stores/player";
 import { toast, toastError } from "@/utils/toast";
@@ -159,7 +160,14 @@ export function useOnlineLibrary() {
     if (isDownloading(song)) return null;
     downloads.value = { ...downloads.value, [key]: { percent: 0, received: 0, total: 0, done: false } };
     try {
-      const r = await bridge.getOnlineUrl(song.source, buildMusicInfo(song), quality || song.quality || "");
+      // ⚠️ 摊平成普通数组再跨桥：Pinia 的数组是 Proxy，结构化克隆过不去
+      const preferred = Array.from(useConfigStore().preferredQualities || []);
+      const r = await bridge.getOnlineUrl(
+        song.source,
+        buildMusicInfo(song),
+        quality || song.quality || "",
+        preferred
+      );
       if (!r || !r.ok || !r.url) throw new Error(r?.message || "未获取到下载地址");
 
       // 歌词顺带取回写成同名 .lrc，让下载回来的歌离线也有歌词

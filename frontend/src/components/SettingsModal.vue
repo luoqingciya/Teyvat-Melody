@@ -80,6 +80,54 @@
             </label>
 
             <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.rememberProgress") }}</span>
+              <input v-model="config.rememberProgress" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.preventSleep") }}</span>
+              <input
+                v-model="config.preventSleep"
+                class="settings__switch"
+                type="checkbox"
+                @change="player.syncSystemState()"
+              />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.taskbarProgress") }}</span>
+              <input
+                v-model="config.taskbarProgress"
+                class="settings__switch"
+                type="checkbox"
+                @change="player.syncSystemState()"
+              />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.autoSkipOnError") }}</span>
+              <input v-model="config.autoSkipOnError" class="settings__switch" type="checkbox" />
+            </label>
+
+            <!-- 优先播放的音质：勾选的先试（高→低），未勾选的仍排在后面兜底 ——
+                 一个偏好设置不该把播放本身弄挂，所以这里是「顺序」而不是「过滤」。 -->
+            <div class="settings__row settings__row--col">
+              <span>{{ t("settings.preferredQualities") }}</span>
+              <div class="settings__quals">
+                <label v-for="q in QUALITY_OPTIONS" :key="q" class="settings__qual">
+                  <input
+                    class="settings__switch"
+                    type="checkbox"
+                    :checked="config.preferredQualities.includes(q)"
+                    @change="togglePreferredQuality(q)"
+                  />
+                  <span>{{ q }}</span>
+                </label>
+              </div>
+              <p class="settings__tip">{{ t("settings.preferredQualitiesTip") }}</p>
+            </div>
+
+            <label class="settings__row settings__row--switch">
               <span>{{ t("settings.globalHotkeys") }}</span>
               <input v-model="config.globalHotkeys" class="settings__switch" type="checkbox" />
             </label>
@@ -272,6 +320,11 @@
             <label class="settings__row settings__row--switch">
               <span>{{ t("settings.showTranslation") }}</span>
               <input v-model="config.showTranslation" class="settings__switch" type="checkbox" />
+            </label>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("settings.karaokeInPanel") }}</span>
+              <input v-model="config.karaokeInPanel" class="settings__switch" type="checkbox" />
             </label>
 
             <label class="settings__row">
@@ -688,6 +741,17 @@ const themes = [
 
 // 可选的播放速度档位（与底部播放器按钮保持一致）
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+// 优先播放的音质可选项（与主进程 sourceManager 的 QUALITY_CHAIN 对齐）
+const QUALITY_OPTIONS = ["flac24bit", "flac", "320k", "128k"];
+
+/** 勾选/取消「优先音质」。始终按 QUALITY_OPTIONS 的固定顺序存，避免勾选先后影响展示 */
+function togglePreferredQuality(q) {
+  const cur = new Set(config.preferredQualities || []);
+  if (cur.has(q)) cur.delete(q);
+  else cur.add(q);
+  config.preferredQualities = QUALITY_OPTIONS.filter((x) => cur.has(x));
+}
 
 // 系统字体 + 已上传自定义字体，供「界面字体 / 全屏歌词字体」两个下拉共用
 const baseFonts = [
@@ -1287,6 +1351,21 @@ onUnmounted(() => clearInterval(cacheTimer));
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
+}
+/* 优先音质多选：一行排开，每项是「小开关 + 音质名」 */
+.settings__quals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.settings__qual {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--teyvat-text-secondary);
+  cursor: pointer;
+  user-select: none;
 }
 /* 只有控件、不需要左侧标签的行（按钮自己说明用途） */
 .settings__row--end {

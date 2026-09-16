@@ -33,6 +33,13 @@ export const useConfigStore = defineStore("config", {
     dlShowProgress: true, // 是否显示桌面歌词进度条
     lyricOffset: 0, // 歌词偏移校准（毫秒，正=歌词提前，负=歌词延后）
     showTranslation: true, // 翻译/双语歌词：显示主歌词后的翻译/副歌词行
+    // ---- 播放时与系统 / 体验相关 ----
+    rememberProgress: true, // 记住每首歌的播放进度（下次从断点续播）
+    taskbarProgress: true, // 在任务栏图标上显示当前播放进度
+    preventSleep: true, // 播放时阻止系统休眠（只防系统挂起，不阻止屏幕熄灭）
+    autoSkipOnError: true, // 播放出错时自动切下一首
+    karaokeInPanel: false, // 主界面/全屏歌词逐字高亮（需歌词带逐字时间轴）
+    preferredQualities: ["flac24bit", "flac", "320k", "128k"], // 优先播放的音质（按顺序尝试）
     // ---- 界面字体（系统字体 / 自定义字体文件） ----
     uiFontFamily: "", // 空表示跟随系统默认；否则为 CSS font-family 值（含引号与回退）
     customFonts: [], // [{ id, family, label, url }] 已上传字体（url 指向 /fonts/...，可跨会话复用）
@@ -141,6 +148,12 @@ export const useConfigStore = defineStore("config", {
         dlShowProgress: true,
         lyricOffset: 0,
         showTranslation: true,
+        rememberProgress: true,
+        taskbarProgress: true,
+        preventSleep: true,
+        autoSkipOnError: true,
+        karaokeInPanel: false,
+        preferredQualities: ["flac24bit", "flac", "320k", "128k"],
         uiFontFamily: "",
         customFonts: [],
         audioFxEnabled: false,
