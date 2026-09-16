@@ -10,6 +10,7 @@ import { useConfigStore } from "@/stores/config";
 import { setupDesktopLyricsBridge } from "@/utils/desktopLyricsBridge";
 import { setupMiniModeBridge } from "@/utils/miniModeBridge";
 import { applyCustomFonts, setAppFont } from "@/utils/fonts";
+import { useShortcuts } from "@/composables/useShortcuts";
 import { songCoverUrl } from "@/utils/songCover";
 import { useUpdater } from "@/composables/useUpdater";
 
@@ -111,6 +112,8 @@ function onResize() {
 
 onMounted(async () => {
   player.init();
+  // 快捷键：装上监听（软件内 keydown + 主进程转发来的全局动作），并把已保存的全局键注册一遍
+  useShortcuts().install();
   config.applyTheme();
   config.applyGlassFx();
   config.applyAccent();

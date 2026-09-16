@@ -514,6 +514,16 @@ ipcMain.handle("win:op", (_e, { op }) => {
     }
   } else if (op === "close") mainWindow.hide(); // 关闭 = 最小化到托盘
   else if (op === "show") { mainWindow.show(); mainWindow.focus(); }
+  // 快捷键用：在「显示」与「隐藏到托盘」之间切换（全局快捷键最常见的用途）
+  else if (op === "toggle") {
+    if (mainWindow.isVisible() && mainWindow.isFocused()) mainWindow.hide();
+    else { mainWindow.show(); mainWindow.focus(); }
+  }
+  // 快捷键用：真正退出（"close" 只是隐藏到托盘，用户按「退出程序」期望的是退出）
+  else if (op === "quit") {
+    app.isQuiting = true;
+    app.quit();
+  }
   return { ok: true };
 });
 
@@ -769,40 +779,121 @@ ipcMain.handle("py:rpc", async (_e, { method, args }) => {
   return body.data;
 });
 
-// ---------------- 系统级全局快捷键（后台/最小化时遥控播放） ----------------
-// 通过 globalShortcut 注册媒体键，即使主窗口隐藏到托盘也能切歌/播放暂停。
-// 由于无边框窗口隐藏时不触发渲染进程 keydown，这里把按键转发到主窗口的全局钩子，
-// 与桌面歌词窗口的播放控制走同一套 window.__togglePlay / __prev / __next。
-const HOTKEY_ACTIONS = new Map([
-  ["MediaPlayPause", "window.__togglePlay && window.__togglePlay()"],
-  ["MediaTrackNext", "window.__next && window.__next()"],
-  ["MediaTrackPrevious", "window.__prev && window.__prev()"],
-]);
+// ---------------- 桌面歌词：锁定 / 置顶 ----------------
+// 两个都是「窗口级开关」，只有主进程改得了，所以做成 IPC 而不是纯前端状态。
+//
+// 锁定 = 鼠标穿透（setIgnoreMouseEvents(true, { forward: true })）：
+//   歌词条压在别的窗口上时，挡住的点击照样能落到下面的窗口，相当于「锁住不让拖」。
+// 置顶 = setAlwaysOnTop：默认开（歌词本来就该浮在最上面），允许关掉便于临时看别的内容。
+let lyricsLocked = false;
+let lyricsTopmost = true;
 
-function applyGlobalHotkeys(enabled) {
-  const registered = [];
-  if (!enabled) {
-    globalShortcut.unregisterAll();
-    return registered;
-  }
-  for (const [accelerator, script] of HOTKEY_ACTIONS) {
+ipcMain.handle("lyrics:lock", () => {
+  if (!lyricsWindow || lyricsWindow.isDestroyed()) return { ok: false, locked: lyricsLocked };
+  lyricsLocked = !lyricsLocked;
+  try {
+    lyricsWindow.setIgnoreMouseEvents(lyricsLocked, { forward: true });
+  } catch (_) {
+    /* 个别平台不支持 forward，退化成完全穿透即可 */
     try {
-      if (globalShortcut.register(accelerator, () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.executeJavaScript(script).catch(() => {});
-        }
-      })) {
+      lyricsWindow.setIgnoreMouseEvents(lyricsLocked);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+  return { ok: true, locked: lyricsLocked };
+});
+
+ipcMain.handle("lyrics:topmost", () => {
+  if (!lyricsWindow || lyricsWindow.isDestroyed()) return { ok: false, topmost: lyricsTopmost };
+  lyricsTopmost = !lyricsTopmost;
+  lyricsWindow.setAlwaysOnTop(lyricsTopmost);
+  return { ok: true, topmost: lyricsTopmost };
+});
+
+// ---------------- 快捷键（全局部分） ----------------
+// 软件内快捷键由渲染进程自己监听 keydown（见 frontend/src/composables/useShortcuts.js）。
+// 这里只管**全局快捷键**：窗口隐藏/失焦时也要生效，必须用 globalShortcut 注册。
+//
+// ⚠️ 动作表在渲染进程（frontend/src/utils/shortcuts.js 的 ACTIONS），主进程**不认识**任何动作，
+// 只把「哪个动作被按下」转发回去。这样动作逻辑只有一份 —— 否则同一套动作在主进程与渲染进程
+// 各写一遍，迟早会走岔（例如全局能切歌、软件内切歌行为却不一样）。
+
+/** 实体媒体键：始终注册、不可配置（键盘上的媒体键，一般没人想改） */
+const MEDIA_KEYS = [
+  ["MediaPlayPause", "playPause"],
+  ["MediaTrackNext", "next"],
+  ["MediaTrackPrevious", "prev"],
+];
+
+/** 把「按下了哪个动作」交给渲染进程执行 */
+function sendShortcutAction(id) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("shortcut:action", id);
+  }
+}
+
+/**
+ * 注册全局快捷键（先全部注销再重注册，避免改键后旧键仍生效）。
+ *
+ * @param {Record<string,string>} shortcuts 动作 id → accelerator（空串 = 不注册）
+ * @param {boolean} enabled false 时一个都不注册
+ * @returns {{ok:boolean, registered:string[], failed:string[]}}
+ *   `failed` 是**没能注册上**的动作 id —— 多半是组合已被别的程序占用。
+ *   必须回传给界面：否则用户改完键发现没反应，完全不知道是被占用了。
+ */
+function applyGlobalShortcuts(shortcuts, enabled) {
+  globalShortcut.unregisterAll();
+  const registered = [];
+  const failed = [];
+  if (enabled === false) return { ok: true, registered, failed };
+
+  for (const [accelerator, id] of MEDIA_KEYS) {
+    try {
+      if (globalShortcut.register(accelerator, () => sendShortcutAction(id))) {
         registered.push(accelerator);
       }
     } catch (_) {
-      /* 个别系统键被占用时忽略，不中断其余注册 */
+      /* 个别系统键不可用时忽略，不中断其余注册 */
     }
   }
-  return registered;
+
+  for (const [id, accelerator] of Object.entries(shortcuts || {})) {
+    const acc = String(accelerator || "").trim();
+    if (!acc) continue;
+    try {
+      if (globalShortcut.register(acc, () => sendShortcutAction(id))) registered.push(acc);
+      else failed.push(id);
+    } catch (_) {
+      failed.push(id); // 非法 accelerator 也会抛
+    }
+  }
+  return { ok: true, registered, failed };
 }
 
+ipcMain.handle("shortcuts:setGlobal", (_e, { shortcuts, enabled }) => {
+  const r = applyGlobalShortcuts(shortcuts, enabled);
+  // 落到 <数据根>/cache/config.json：全局快捷键在**窗口还没加载**时就要注册，
+  // 那时渲染进程的配置还读不到，只能由主进程从文件里取（见启动时的 applySavedShortcuts）。
+  writeConfigPatch({ globalShortcuts: shortcuts || {}, globalShortcutsEnabled: enabled !== false });
+  return r;
+});
+
+/** 启动时按已保存的配置注册一次（渲染进程起来后会再推一次，幂等） */
+function applySavedShortcuts() {
+  const cfg = appConfig.readConfig();
+  const shortcuts = cfg.globalShortcuts && typeof cfg.globalShortcuts === "object" ? cfg.globalShortcuts : {};
+  const enabled = cfg.globalShortcutsEnabled !== false && appConfig.readConfig().globalHotkeys !== false;
+  return applyGlobalShortcuts(shortcuts, enabled);
+}
+
+// 旧的开关（设置页「系统全局快捷键」）保留：关掉就全部注销
 ipcMain.handle("hotkeys:apply", (_e, { enabled }) => {
-  return { ok: true, registered: applyGlobalHotkeys(!!enabled) };
+  const cfg = appConfig.readConfig();
+  const shortcuts = cfg.globalShortcuts && typeof cfg.globalShortcuts === "object" ? cfg.globalShortcuts : {};
+  const r = applyGlobalShortcuts(shortcuts, !!enabled);
+  writeConfigPatch({ globalHotkeys: !!enabled });
+  return { ok: true, registered: r.registered, failed: r.failed };
 });
 
 // ---------------- 自定义源（洛雪源脚本宿主） ----------------
@@ -1303,6 +1394,10 @@ if (!gotLock) {
     createLyricsWindow();
     createMiniWindow();
     createTray();
+    // 全局快捷键：按上次保存的配置先注册一遍。
+    // 必须在这里（窗口已创建、渲染进程还没加载）就注册 —— 用户按全局键往往正是
+    // 「窗口还没出来/已经藏起来」的时候，等渲染进程推配置就晚了。
+    applySavedShortcuts();
     // 恢复上次的桌面歌词可见性（默认隐藏）
     if (loadLyricSettings().visible) lyricsSetVisible(true);
     // 先把代理配置推给常驻模块（源宿主 / 搜索），**必须在 init 之前** ——

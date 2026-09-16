@@ -128,11 +128,6 @@
             </div>
 
             <label class="settings__row settings__row--switch">
-              <span>{{ t("settings.globalHotkeys") }}</span>
-              <input v-model="config.globalHotkeys" class="settings__switch" type="checkbox" />
-            </label>
-
-            <label class="settings__row settings__row--switch">
               <span>{{ t("settings.songNotification") }}</span>
               <input v-model="config.songNotification" class="settings__switch" type="checkbox" />
             </label>
@@ -619,6 +614,85 @@
         </div>
 
         <!-- ============ 关于与更新 ============ -->
+        <!-- 快捷键 -->
+        <div v-show="activeTab === 'shortcuts'" class="settings__pane">
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("shortcut.inAppGroup") }}</h4>
+            <p class="settings__tip">{{ t("shortcut.inAppTip") }}</p>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("shortcut.enable") }}</span>
+              <input v-model="config.inAppHotkeys" class="settings__switch" type="checkbox" />
+            </label>
+
+            <div class="settings__keys" :class="{ 'settings__keys--off': !config.inAppHotkeys }">
+              <div v-for="a in inAppActions" :key="a.id" class="settings__key">
+                <span class="settings__key-label">{{ t(a.label) }}</span>
+                <button
+                  class="settings__key-btn"
+                  :class="{ 'settings__key-btn--rec': isRecording('inApp', a.id) }"
+                  @click="onRecordKey('inApp', a.id)"
+                >
+                  {{ isRecording("inApp", a.id) ? t("shortcut.pressKeys") : keyText("inApp", a.id) }}
+                </button>
+                <button
+                  v-if="inAppMap[a.id]"
+                  class="settings__key-clear"
+                  :title="t('shortcut.clear')"
+                  :aria-label="t('shortcut.clear')"
+                  @click="onClearKey('inApp', a.id)"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings__group">
+            <h4 class="settings__label">{{ t("shortcut.globalGroup") }}</h4>
+            <p class="settings__tip">{{ t("shortcut.globalTip") }}</p>
+
+            <label class="settings__row settings__row--switch">
+              <span>{{ t("shortcut.enable") }}</span>
+              <input
+                v-model="config.globalHotkeys"
+                class="settings__switch"
+                type="checkbox"
+                @change="onToggleGlobalHotkeys"
+              />
+            </label>
+
+            <!-- 注册失败（多半是被别的程序占用）必须说清楚，否则用户改完键发现没反应 -->
+            <p v-if="globalFailures.length" class="settings__tip settings__tip--err">
+              {{ t("shortcut.failed", { n: globalFailures.length }) }}<template v-if="graphicsHotkeyConflict">
+                {{ t("shortcut.failedGraphics") }}</template
+              >
+            </p>
+
+            <div class="settings__keys" :class="{ 'settings__keys--off': !config.globalHotkeys }">
+              <div v-for="a in globalActions" :key="a.id" class="settings__key">
+                <span class="settings__key-label">{{ t(a.label) }}</span>
+                <button
+                  class="settings__key-btn"
+                  :class="{ 'settings__key-btn--rec': isRecording('global', a.id) }"
+                  @click="onRecordKey('global', a.id)"
+                >
+                  {{ isRecording("global", a.id) ? t("shortcut.pressKeys") : keyText("global", a.id) }}
+                </button>
+                <button
+                  v-if="globalMap[a.id]"
+                  class="settings__key-clear"
+                  :title="t('shortcut.clear')"
+                  :aria-label="t('shortcut.clear')"
+                  @click="onClearKey('global', a.id)"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div v-show="activeTab === 'about'" class="settings__pane">
           <div class="settings__group">
             <h4 class="settings__label">{{ t("update.title") }}</h4>
@@ -729,6 +803,8 @@ import { useI18n } from "@/utils/i18n";
 import { registerFont, setAppFont } from "@/utils/fonts";
 import { useUpdater } from "@/composables/useUpdater";
 import { useApi } from "@/composables/useApi";
+import { useShortcuts } from "@/composables/useShortcuts";
+import { actionsFor, formatAccelerator } from "@/utils/shortcuts";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -748,12 +824,61 @@ const { t } = useI18n();
 // ---- 分类标签 ----
 // 设置项变多（播放/外观/歌词/在线源/关于）后，一长条滚到底既难找也难回顾，
 // 改成左侧分类、右侧只显示当前这一类。图标沿用项目既有 AppIcon 名称。
+// ---- 快捷键 ----
+// 动作表与「按了做什么」都在 utils/shortcuts.js + composables/useShortcuts.js，
+// 这里只负责显示与录制。
+const {
+  recording,
+  globalFailures,
+  inApp: inAppMap,
+  globalMap,
+  applyGlobal: applyGlobalShortcuts,
+  startRecording,
+  setAccelerator,
+} = useShortcuts();
+const inAppActions = actionsFor("inApp");
+const globalActions = actionsFor("global");
+
+const isRecording = (scope, id) => recording.value?.scope === scope && recording.value?.id === id;
+
+/** 显示用文案：已绑定 → `Ctrl + Alt + ←`；未绑定 → 「未设置」 */
+function keyText(scope, id) {
+  const map = scope === "global" ? globalMap.value : inAppMap.value;
+  const acc = map[id];
+  return acc ? formatAccelerator(acc, config.language) : t("shortcut.unset");
+}
+
+/** 点一下开始录制，再点一下取消（录制中按 Esc 也能取消，见 useShortcuts） */
+function onRecordKey(scope, id) {
+  startRecording(isRecording(scope, id) ? null : scope, id);
+}
+
+function onClearKey(scope, id) {
+  setAccelerator(scope, id, "");
+}
+
+function onToggleGlobalHotkeys() {
+  applyGlobalShortcuts();
+}
+
+/**
+ * 注册失败的组合里是否有 Ctrl+Alt+方向键。
+ *
+ * ⚠️ 这是 Windows 上极常见的一处占用：Intel 显卡驱动默认用 Ctrl+Alt+方向键**旋转屏幕**，
+ * 而且是全局注册的 —— 撞上它时用户只会看到「注册失败」，完全猜不到是谁占的。
+ * 明确点出来，用户就知道该换个组合（或去关掉显卡的旋转快捷键）。
+ */
+const graphicsHotkeyConflict = computed(() =>
+  globalFailures.value.some((f) => /^Ctrl\+Alt\+Arrow/.test(f.acc || ""))
+);
+
 const TABS = [
   { key: "playback", label: "settings.tabPlayback", icon: "play" },
   { key: "appearance", label: "settings.tabAppearance", icon: "palette" },
   { key: "lyrics", label: "settings.tabLyrics", icon: "list-music" },
   { key: "online", label: "settings.tabOnline", icon: "cloud" },
   { key: "network", label: "settings.tabNetwork", icon: "globe" },
+  { key: "shortcuts", label: "settings.tabShortcuts", icon: "command" },
   { key: "about", label: "settings.tabAbout", icon: "info" },
 ];
 // 记住上次停留的分类（弹窗关掉再开回到原处，不用每次重新点）
@@ -1392,6 +1517,71 @@ onUnmounted(() => clearInterval(cacheTimer));
   align-items: flex-start;
   gap: var(--space-2);
 }
+/* 快捷键：一列动作 + 录制按钮 */
+.settings__keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+}
+.settings__keys--off {
+  opacity: 0.5;
+}
+.settings__key {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings__key-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--teyvat-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings__key-btn {
+  flex: none;
+  min-width: 84px;
+  padding: 4px var(--space-2);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--teyvat-card-border);
+  background: color-mix(in srgb, var(--teyvat-card-bg) 40%, transparent);
+  color: var(--teyvat-text);
+  cursor: pointer;
+}
+.settings__key-btn:hover {
+  border-color: var(--teyvat-gold);
+}
+/* 录制中：高亮 + 呼吸，提示「正在等你按键」 */
+.settings__key-btn--rec {
+  border-color: var(--teyvat-gold);
+  color: var(--teyvat-gold);
+  animation: keyRec 1s ease-in-out infinite;
+}
+@keyframes keyRec {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.settings__key-clear {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 11px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--teyvat-text-secondary);
+  cursor: pointer;
+}
+.settings__key-clear:hover {
+  color: var(--teyvat-gold);
+}
+
 /* 分组小标题（缓存分区：资源缓存 / 其他缓存） */
 .settings__subhead {
   font-size: 12px;

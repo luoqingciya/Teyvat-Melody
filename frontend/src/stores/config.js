@@ -40,6 +40,12 @@ export const useConfigStore = defineStore("config", {
     autoSkipOnError: true, // 播放出错时自动切下一首
     karaokeInPanel: false, // 主界面/全屏歌词逐字高亮（需歌词带逐字时间轴）
     preferredQualities: ["flac24bit", "flac", "320k", "128k"], // 优先播放的音质（按顺序尝试）
+    // ---- 快捷键 ----
+    inAppHotkeys: true, // 启用「软件内快捷键」（窗口聚焦时生效）
+    // 绑定表：{ inApp: {动作id: 按键}, global: {动作id: 按键} }。
+    // 空对象 = 全部沿用默认值（默认键见 frontend/src/utils/shortcuts.js 的 ACTIONS）。
+    // 全局快捷键由主进程注册，另存一份到 <数据根>/cache/config.json。
+    shortcuts: { inApp: {}, global: {} },
     // ---- 界面字体（系统字体 / 自定义字体文件） ----
     uiFontFamily: "", // 空表示跟随系统默认；否则为 CSS font-family 值（含引号与回退）
     customFonts: [], // [{ id, family, label, url }] 已上传字体（url 指向 /fonts/...，可跨会话复用）
@@ -154,6 +160,8 @@ export const useConfigStore = defineStore("config", {
         autoSkipOnError: true,
         karaokeInPanel: false,
         preferredQualities: ["flac24bit", "flac", "320k", "128k"],
+        inAppHotkeys: true,
+        shortcuts: { inApp: {}, global: {} },
         uiFontFamily: "",
         customFonts: [],
         audioFxEnabled: false,

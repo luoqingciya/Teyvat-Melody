@@ -40,6 +40,20 @@ api.onLyricsVisibility = (cb) => {
 };
 // 系统级全局快捷键（后台遥控播放）
 api.applyGlobalHotkeys = (enabled) => invoke("hotkeys:apply", { enabled: !!enabled });
+// 快捷键（见 frontend/src/utils/shortcuts.js 的动作表）
+// 全局快捷键必须交给主进程注册；主进程触发后只回传「哪个动作」，具体做什么由渲染进程查表执行。
+api.setGlobalShortcuts = ({ enabled, shortcuts }) =>
+  invoke("shortcuts:setGlobal", { enabled: enabled !== false, shortcuts: shortcuts || {} });
+api.onShortcutAction = (cb) => {
+  const h = (_e, id) => cb(id);
+  ipcRenderer.on("shortcut:action", h);
+  return () => ipcRenderer.removeListener("shortcut:action", h);
+};
+api.toggleMainWindow = () => invoke("win:op", { op: "toggle" });
+api.quitApp = () => invoke("win:op", { op: "quit" });
+// 桌面歌词：锁定（鼠标穿透）/ 置顶
+api.toggleLyricsLock = () => invoke("lyrics:lock");
+api.toggleLyricsTopmost = () => invoke("lyrics:topmost");
 // 切歌桌面通知
 api.notifySong = (payload) => invoke("notify:song", { ...payload });
 // 全屏沉浸播放：切换原生全屏（屏蔽任务栏/最大化视口）
