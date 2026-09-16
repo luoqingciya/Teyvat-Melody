@@ -100,10 +100,11 @@ async function checkForUpdate(currentVersion, opts = {}) {
  * （Node 内置但没暴露为可 require 的模块），引第三方库又违背「零运行时依赖」。
  * 所以改走原生 http/https + 自己写的 CONNECT 隧道 agent（proxyAgent.js）。
  */
-function requestJson(url, headers, proxy) {
+function requestJson(url, headers, proxy, depth = 0) {
   const http = require("http");
   const https = require("https");
   const proxyAgent = require("./proxyAgent");
+  const { redirectTarget, MAX_REDIRECTS } = require("./httpRedirect");
   return new Promise((resolve, reject) => {
     let u;
     try {
@@ -125,6 +126,17 @@ function requestJson(url, headers, proxy) {
         proxy
       ),
       (res) => {
+        // ⚠️ 必须跟随重定向：GitHub 的接口与资产地址都会 302（资产会跳到
+        // release-assets.githubusercontent.com）。不跟就只会看到「HTTP 302」，
+        // 而且开不开代理都一样 —— 那是代码问题，不是网络问题。
+        const next = redirectTarget(res.statusCode, res.headers.location, url);
+        if (next) {
+          res.resume();
+          if (depth >= MAX_REDIRECTS) {
+            return reject(Object.assign(new Error(`重定向次数过多（>${MAX_REDIRECTS}）`), { __status: res.statusCode }));
+          }
+          return requestJson(next, headers, proxy, depth + 1).then(resolve, reject);
+        }
         if (res.statusCode < 200 || res.statusCode >= 300) {
           res.resume();
           return reject(Object.assign(new Error(`GitHub API ${res.statusCode}`), { __status: res.statusCode }));

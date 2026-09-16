@@ -15,6 +15,7 @@ const onlineLyric = require("./onlineLyric");
 const updater = require("./updater");
 const appConfig = require("./appConfig");
 const proxyAgent = require("./proxyAgent");
+const { httpGetStream } = require("./httpStream");
 
 const BACKEND_HOST = "127.0.0.1";
 const DEFAULT_BACKEND_PORT = 5000;
@@ -865,44 +866,6 @@ function onlineCacheEnabled() {
  *
  * @returns {Promise<{status:number, headers:object, stream:import("stream").Readable, cleanup:Function}>}
  */
-function httpGetStream(url, { onProgress } = {}) {
-  return new Promise((resolve, reject) => {
-    let u;
-    try {
-      u = new URL(url);
-    } catch {
-      return reject(new Error(`非法 URL：${url}`));
-    }
-    // ⚠️ 本机地址永远直连：通知图标传进来的其实是本机封面代理的 URL
-    //（http://127.0.0.1:<后端端口>/api/online/image?...），塞进代理就会拉不到图。
-    const proxy = proxyAgent.effectiveProxy(url, appConfig.proxyConfig());
-    const lib = u.protocol === "https:" ? require("https") : require("http");
-    const opts = {
-      hostname: u.hostname,
-      port: u.port || (u.protocol === "https:" ? 443 : 80),
-      path: u.pathname + u.search,
-      method: "GET",
-      headers: { "User-Agent": "TeyvatMelody", Accept: "*/*" },
-    };
-    const req = lib.request(proxyAgent.withProxyOptions(opts, proxy), (res) => {
-      const total = Number(res.headers["content-length"]) || 0;
-      let received = 0;
-      // 手动计数而不是套一层 Transform：调用方拿到的是原始 res，行为可与之前完全一致
-      res.on("data", (chunk) => {
-        received += chunk.length;
-        if (onProgress) onProgress(received, total);
-      });
-      resolve({
-        status: res.statusCode,
-        headers: res.headers,
-        stream: res,
-        cleanup: () => res.destroy(),
-      });
-    });
-    req.on("error", reject);
-    req.end();
-  });
-}
 
 ipcMain.handle("online:lyric", async (_e, { source, musicInfo }) => {
   try {
