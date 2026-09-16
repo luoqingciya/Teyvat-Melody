@@ -619,9 +619,10 @@
               </button>
             </div>
 
+            <!-- 检查本身失败：这时没有任何可用信息，直接显示错误 -->
             <p v-if="updater.error.value" class="settings__tip settings__tip--err">{{ updater.error.value }}</p>
 
-            <template v-else-if="updater.info.value?.ok">
+            <template v-if="updater.info.value?.ok">
               <p v-if="!updater.info.value.hasUpdate" class="settings__tip">{{ t("update.upToDate") }}</p>
               <template v-else>
                 <div class="settings__notice">
@@ -662,6 +663,12 @@
                   <pre>{{ updater.info.value.notes }}</pre>
                 </details>
               </template>
+
+              <!-- 下载失败单独显示，**不能**把上面的「有新版本 + 下载并安装」挤掉：
+                   否则失败一次就再也点不到重试，用户只能干看着一行报错。 -->
+              <p v-if="updater.downloadError.value" class="settings__tip settings__tip--err">
+                {{ updater.downloadError.value }}
+              </p>
             </template>
 
             <p v-if="config.skipUpdateVersion" class="settings__tip">

@@ -16,6 +16,11 @@ export function useUpdater() {
   const checking = ref(false);
   const info = ref(null); // 主进程返回的检查结果（含 installed / asset）
   const error = ref("");
+  // ⚠️ 下载失败与「检查失败」必须分开存：
+  //    之前两者共用一个 error，而模板里信息块是 `v-else-if="!error"` ——
+  //    于是下载失败一次，**「有新版本」和「下载并安装」按钮一起消失**，
+  //    用户看到一行报错却再也点不到重试（界面还停在「检查更新」那一步，很费解）。
+  const downloadError = ref("");
   const downloading = ref(false);
   const progress = ref(0); // 0~100
   const downloadedPath = ref(""); // 下载完成的本地路径
@@ -41,6 +46,7 @@ export function useUpdater() {
     }
     checking.value = true;
     error.value = "";
+    downloadError.value = "";
     downloadedPath.value = "";
     try {
       const r = await a.checkUpdate();
@@ -60,16 +66,16 @@ export function useUpdater() {
     const a = api();
     const asset = info.value?.asset;
     if (!a || typeof a.downloadUpdate !== "function") {
-      error.value = t("update.unsupported");
+      downloadError.value = t("update.unsupported");
       return false;
     }
     if (!asset) {
-      error.value = t("update.noAsset");
+      downloadError.value = t("update.noAsset");
       return false;
     }
     downloading.value = true;
     progress.value = 0;
-    error.value = "";
+    downloadError.value = "";
     try {
       watchProgress();
       const r = await a.downloadUpdate(asset.url, asset.name);
@@ -78,7 +84,7 @@ export function useUpdater() {
       progress.value = 100;
       return true;
     } catch (e) {
-      error.value = e.message;
+      downloadError.value = e.message;
       return false;
     } finally {
       downloading.value = false;
@@ -92,7 +98,7 @@ export function useUpdater() {
   async function downloadAndInstall() {
     const ok = await download();
     if (!ok) {
-      toastError(`${t("update.downloadFailed")}：${error.value}`);
+      toastError(`${t("update.downloadFailed")}：${downloadError.value}`);
       return false;
     }
     const a = api();
@@ -132,6 +138,7 @@ export function useUpdater() {
     checking,
     info,
     error,
+    downloadError,
     downloading,
     progress,
     downloadedPath,
