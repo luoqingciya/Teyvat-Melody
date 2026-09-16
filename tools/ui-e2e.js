@@ -781,18 +781,23 @@ const skip = (name, why) => {
       //
       // 实现细节（排查过，别再走弯路）：菜单把「点击外部 / 滚动 / Esc」的全局监听挂在 window 上，
       // 且是 setTimeout(...,0) 延迟挂载的（防「打开菜单的那次点击立刻把自己关掉」）。
-      // 所以这里**必须往 window 派发**，派到 document 或行元素都到不了那个监听器。
-      // 独立探针（同序列、5/5 通过）证明产品本身没问题；偶发不关闭是执行到此处时机的波动，
-      // 因此这里做「重试 + 记录诊断」，而不是把等待时间一味调大去赌。
+      //
+      // ⚠️ 但**只往 window 派发是不够的**：真实用户按 Esc 时，事件目标是**当前聚焦的元素**，
+      //    而菜单打开后焦点就在菜单里 —— 菜单自身的 @keydown 会直接处理掉。之前只派 window，
+      //    等于绕开了用户真正走的那条路径，一旦那个延迟挂载慢了一拍就误报「Esc 关不掉」。
+      //    所以先按真实路径派给聚焦元素，再退回 window 兜底。
       const openBeforeEsc = !!document.querySelector('.song-ctx');
       const focusBeforeEsc = document.activeElement?.className || '';
       const escProbe = [];
       let openAfterEsc = openBeforeEsc;
       for (let attempt = 0; attempt < 3 && openAfterEsc; attempt++) {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        const target = document.activeElement && document.activeElement !== document.body
+          ? document.activeElement
+          : window;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
         await new Promise((r) => setTimeout(r, 300));
         openAfterEsc = !!document.querySelector('.song-ctx');
-        escProbe.push('第' + (attempt + 1) + '次→' + (openAfterEsc ? '仍开' : '已关'));
+        escProbe.push('第' + (attempt + 1) + '次(' + (target === window ? 'window' : '聚焦元素') + ')→' + (openAfterEsc ? '仍开' : '已关'));
       }
 
       const focusedRowKey = first.getAttribute('tabindex');
