@@ -16,6 +16,7 @@ const updater = require("./updater");
 const appConfig = require("./appConfig");
 const proxyAgent = require("./proxyAgent");
 const { httpGetStream } = require("./httpStream");
+const { candidatePorts } = require("./backendPort");
 
 const BACKEND_HOST = "127.0.0.1";
 const DEFAULT_BACKEND_PORT = 5000;
@@ -230,9 +231,30 @@ function pickFreePort() {
   });
 }
 
+/** 该端口现在能不能绑上（能绑 = 空闲） */
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once("error", () => resolve(false));
+    srv.listen(port, BACKEND_HOST, () => srv.close(() => resolve(true)));
+  });
+}
+
+/**
+ * 选后端端口：先试「按数据根算出的稳定端口」，被占就往后顺延；
+ * 整个区间都被占（几乎不可能）才退回随机端口 —— 那种情况会丢一次设置。
+ */
+async function pickBackendPort(root) {
+  for (const port of candidatePorts(root)) {
+    if (await isPortFree(port)) return port;
+  }
+  return pickFreePort();
+}
+
 /** 选定端口 → 记下 URL → 拉起后端（早于 app ready，与 Electron 初始化并行） */
 const backendBoot = (async () => {
-  backendPort = await pickFreePort();
+  backendPort = await pickBackendPort(dataRoot());
   BACKEND_URL = `http://${BACKEND_HOST}:${backendPort}`;
   console.log("[backend] port:", backendPort);
   startBackend();
