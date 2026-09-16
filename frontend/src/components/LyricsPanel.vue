@@ -10,7 +10,7 @@
           :key="i"
           class="lyrics-line-wrap"
           :class="{ 'lyrics-line-wrap--active': i === activeIndex }"
-          :style="{ height: LINE_HEIGHT + 'px' }"
+          :style="{ height: rowHeight + 'px' }"
         >
           <p class="lyrics-line">
             <template v-if="i === activeIndex && activeWordSpans.length">
@@ -46,12 +46,20 @@ const props = defineProps({
   currentTime: { type: Number, default: 0 },
   // 歌词偏移（毫秒），与桌面歌词/播放器 store 的 lyricOffset 保持一致
   offset: { type: Number, default: 0 },
+  /**
+   * 每行高度（px）。**必须随字号一起变大**：
+   * 行容器是定高的，字号调大后内容比容器还高就会被裁掉
+   *（实测全屏字号 32 时内容 93px，而行高固定 46px → 上下各切掉一截）。
+   * 调用方（全屏播放页）按自己的字号算好传进来；主界面字号固定，用默认值即可。
+   */
+  lineHeight: { type: Number, default: 46 },
 });
 
 const config = useConfigStore();
 const { t } = useI18n();
 
-const LINE_HEIGHT = 46; // 每行歌词高度（px，含可能的翻译副行）
+// 每行歌词高度（px，含可能的翻译副行）。默认值对应主界面的固定字号。
+const rowHeight = computed(() => Math.max(24, Number(props.lineHeight) || 46));
 const viewport = ref(null);
 const viewportHeight = ref(0);
 
@@ -104,7 +112,7 @@ const activeWordSpans = computed(() => {
 
 const scrollOffset = computed(() => {
   const safe = Math.max(0, activeIndex.value);
-  return viewportHeight.value / 2 - (safe * LINE_HEIGHT + LINE_HEIGHT / 2);
+  return viewportHeight.value / 2 - (safe * rowHeight.value + rowHeight.value / 2);
 });
 
 watch(
@@ -147,6 +155,9 @@ onMounted(() => {
 .lyrics-line {
   margin: 0;
   font-size: 13px;
+  /* flex: none —— 容器是定高的，内容一旦略微超出，flex 会先把这两行压扁，
+     结果就是「翻译行突然变矮、文字被切」。宁可让它溢出（外层本来就裁不到），也不压缩。 */
+  flex: none;
   color: var(--teyvat-text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -181,6 +192,7 @@ onMounted(() => {
 .lyrics-sub {
   margin: 0;
   font-size: 11px;
+  flex: none;
   color: var(--teyvat-text-secondary);
   opacity: 0.85;
   white-space: nowrap;

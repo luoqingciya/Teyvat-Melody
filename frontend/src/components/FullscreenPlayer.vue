@@ -42,7 +42,12 @@
 
       <!-- 右侧：歌词滚动 -->
       <div class="fs-lyrics">
-        <LyricsPanel :lines="player.lyrics" :current-time="player.progress" :offset="config.lyricOffset" />
+        <LyricsPanel
+          :lines="player.lyrics"
+          :current-time="player.progress"
+          :offset="config.lyricOffset"
+          :line-height="fsLineHeight"
+        />
       </div>
       </div>
     </div>
@@ -70,6 +75,21 @@ const fsFontVars = computed(() => {
   style["--fs-font-family"] = fam;
   if (config.fsFontSize > 0) style["--fs-font-size"] = `${config.fsFontSize}px`;
   return style;
+});
+
+/**
+ * 全屏歌词每行的高度（px）。
+ *
+ * ⚠️ 必须随字号一起缩放。行容器是**定高**的（虚拟滚动要靠它算居中位置），
+ * 字号调大后内容比容器还高就会被裁掉 —— 实测字号 32 时内容 93px，而行高固定 46px，
+ * 上下各切掉一截（就是「字号调大后字被截断」）。
+ *
+ * 组成：主行行盒（2.2em，见 .fs-lyrics 的样式）+ 翻译副行（0.7em×1.2）+ 1px 间距。
+ * 副行虽然只有当前行会显示，但所有行必须等高，所以每行都预留。
+ */
+const fsLineHeight = computed(() => {
+  const f = Math.max(12, Number(config.fsFontSize) || 16);
+  return Math.round(f * 2.2 + f * 0.7 * 1.2 + 1);
 });
 
 const coverSrc = computed(() => songCoverUrl(player.currentSong));
@@ -264,8 +284,15 @@ function qualityLabel(song) {
 }
 .fs-lyrics :deep(.lyrics-line) {
   font-size: 1em;
-  height: 2.9em;
-  line-height: 2.9em;
+  /* 行盒交给外层容器定高（见 fsLineHeight）：这里只定文字自身的高度，
+     不再写死 2.9em —— 那会让字号一大就超出容器被裁。 */
+  height: auto;
+  line-height: 2.2em;
+}
+/* 翻译副行按比例缩放：不缩的话字号调大后主行很大、翻译行还是 11px，看着脱节 */
+.fs-lyrics :deep(.lyrics-sub) {
+  font-size: 0.7em;
+  line-height: 1.2;
 }
 .fs-lyrics :deep(.lyrics-panel__empty) {
   font-size: 1em;
