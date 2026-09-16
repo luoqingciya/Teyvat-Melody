@@ -18,6 +18,34 @@ const tls = require("tls");
 const CONNECT_TIMEOUT = 15000;
 
 /**
+ * 隧道被拒时补一句「最可能的原因」—— 光看到状态码用户无从下手。
+ *
+ * 实测最常见的坑：**把代理软件的控制接口当成代理端口填了**。
+ * 例如 Clash / mihomo 的 `external-controller` 默认就在 9090，那是个只接受 GET 的
+ * REST API（`GET /` 会回 `{"hello":"mihomo"}`）；收到 CONNECT 就回
+ * `405 Method Not Allowed` + `Allow: GET`。真正的代理端口是 `mixed-port`，默认 7890。
+ * 用户只看到「405」根本猜不到是端口填错。
+ */
+function tunnelHint(status, head) {
+  if (status === 405 && /^allow:\s*get/im.test(head)) {
+    return (
+      "：该端口只接受 GET，看起来是代理软件的「控制接口」而不是代理端口" +
+      "（Clash / mihomo 的控制接口默认 9090；代理端口是 mixed-port，默认 7890），请改填代理端口"
+    );
+  }
+  if (status === 407) {
+    return "：代理要求认证，本软件暂不支持带用户名密码的代理";
+  }
+  if (status === 400 || status === 501) {
+    return "：该端口可能不是 HTTP 代理（或不支持 CONNECT 隧道）";
+  }
+  if (status === 403) {
+    return "：代理拒绝了这次连接，请检查代理的访问规则";
+  }
+  return "";
+}
+
+/**
  * 建立到目标的 socket（必要时先穿过代理）。
  *
  * 语义对齐 `http.Agent#createConnection`：成功时 `cb(null, socket)`，
@@ -77,7 +105,7 @@ function createProxiedSocket(proxy, opts, cb) {
     if (status !== 200) {
       onProxy.destroy();
       const firstLine = head.split("\r\n")[0] || "";
-      done(new Error(`代理拒绝隧道（${firstLine || "无响应"}）`));
+      done(new Error(`代理拒绝隧道（${firstLine || "无响应"}）${tunnelHint(status, head)}`));
       return;
     }
 

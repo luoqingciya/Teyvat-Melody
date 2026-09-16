@@ -43,7 +43,7 @@ const ok = (name, cond, extra) => {
 // ---------------- 一个最小的 HTTP 代理（只为测试存在） ----------------
 // 支持 CONNECT（建隧道后原样对接上游）与绝对 URI 的普通 GET。
 // 记录收到的 CONNECT 目标，供断言校验「代理确实被用到了、且目标正确」。
-function startProxy({ auth = null, denyConnect = false } = {}) {
+function startProxy({ auth = null, denyConnect = false, connectReject = 0 } = {}) {
   const connects = [];
   const plain = [];
   const server = http.createServer();
@@ -70,6 +70,17 @@ function startProxy({ auth = null, denyConnect = false } = {}) {
   });
   server.on("connect", (req, clientSocket, head) => {
     connects.push(req.url);
+    if (connectReject) {
+      // 模拟「把代理软件的控制接口当成代理端口」：那是个只接受 GET 的 REST API，
+      // 收到 CONNECT 会回 `405 Method Not Allowed` + `Allow: GET`
+      // （实测 mihomo / Clash 的控制接口默认在 9090，就是这种反应）。
+      clientSocket.end(
+        `HTTP/1.1 ${connectReject} ${connectReject === 405 ? "Method Not Allowed" : "Proxy Auth Required"}\r\n` +
+          (connectReject === 405 ? "Allow: GET\r\n" : "") +
+          "\r\n"
+      );
+      return;
+    }
     if (denyConnect) {
       clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
@@ -232,6 +243,39 @@ function startProxy({ auth = null, denyConnect = false } = {}) {
           ok("代理拒绝隧道 → 回调带错误（不会挂住）", !!err && /403|拒绝/.test(err.message), err && err.message);
         } finally {
           denyProxy.close();
+        }
+
+        // ③b) 把「代理软件的控制接口」当成代理端口（实测最常见的填错方式）。
+        //     只报「405 Method Not Allowed」用户根本猜不到是端口错了，必须点出来。
+        const ctlProxy = await startProxy({ connectReject: 405 });
+        try {
+          const err = await new Promise((resolve) => {
+            createProxiedSocket(
+              { enabled: true, host: "127.0.0.1", port: ctlProxy.port },
+              { host: "127.0.0.1", port: tlsServer.port, servername: "localhost", isHttps: true },
+              (e) => resolve(e)
+            );
+          });
+          ok("405 + Allow: GET → 提示「这是控制接口，不是代理端口」",
+            !!err && /405/.test(err.message) && /控制接口/.test(err.message) && /7890/.test(err.message),
+            err && err.message);
+        } finally {
+          ctlProxy.close();
+        }
+
+        // ③c) 代理要求认证 → 提示不支持带认证的代理
+        const authProxy = await startProxy({ connectReject: 407 });
+        try {
+          const err = await new Promise((resolve) => {
+            createProxiedSocket(
+              { enabled: true, host: "127.0.0.1", port: authProxy.port },
+              { host: "127.0.0.1", port: tlsServer.port, servername: "localhost", isHttps: true },
+              (e) => resolve(e)
+            );
+          });
+          ok("407 → 提示代理需要认证", !!err && /407/.test(err.message) && /认证/.test(err.message), err && err.message);
+        } finally {
+          authProxy.close();
         }
 
         // ④ 代理端口没人监听 → 明确报「连接代理失败」
