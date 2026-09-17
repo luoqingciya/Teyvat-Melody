@@ -878,7 +878,7 @@ const TABS = [
   { key: "lyrics", label: "settings.tabLyrics", icon: "list-music" },
   { key: "online", label: "settings.tabOnline", icon: "cloud" },
   { key: "network", label: "settings.tabNetwork", icon: "globe" },
-  { key: "shortcuts", label: "settings.tabShortcuts", icon: "command" },
+  { key: "shortcuts", label: "settings.tabShortcuts", icon: "keyboard" },
   { key: "about", label: "settings.tabAbout", icon: "info" },
 ];
 // 记住上次停留的分类（弹窗关掉再开回到原处，不用每次重新点）
