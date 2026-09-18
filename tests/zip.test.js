@@ -15,6 +15,13 @@ const { createZip, readZip, crc32 } = require("../electron/zip");
  * 找一个可用的 Python 解释器（用来做「独立实现」验证）。
  * 优先项目 venv，其次 PATH 上的 python3/python —— CI 在 ubuntu 上，只有后者。
  */
+/**
+ * ⚠️ 必须让 Python 用 UTF-8 输出：Windows 上它默认按控制台代码页编码，
+ * 一旦输出里带中文文件名（`zipfile -l` 就会带上）就会 UnicodeEncodeError 直接非零退出 ——
+ * 表现是「列目录失败」，而 -e 解压不打印文件名所以没事（CI 在 windows 上就是这么红的）。
+ */
+const PY_ENV = { ...process.env, PYTHONIOENCODING: "utf-8" };
+
 function findPython() {
   const cands = [
     process.env.PYTHON,
@@ -111,6 +118,7 @@ console.log("\n---- 用「别的实现」验证（关键）----");
     try {
       listed = execFileSync(py, ["-m", "zipfile", "-l", zipPath], {
         encoding: "utf8",
+        env: PY_ENV,
         stdio: ["ignore", "pipe", "ignore"],
       });
     } catch (e) {
@@ -127,7 +135,7 @@ console.log("\n---- 用「别的实现」验证（关键）----");
     const outDir = path.join(tmp, "expanded");
     let extracted = false;
     try {
-      execFileSync(py, ["-m", "zipfile", "-e", zipPath, outDir], { stdio: ["ignore", "ignore", "pipe"] });
+      execFileSync(py, ["-m", "zipfile", "-e", zipPath, outDir], { env: PY_ENV, stdio: ["ignore", "ignore", "pipe"] });
       extracted = true;
     } catch (e) {
       console.log("  解压失败:", String(e.stderr || e.message).slice(0, 200));
