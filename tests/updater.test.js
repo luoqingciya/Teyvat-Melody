@@ -36,6 +36,8 @@ const RELEASE = {
   assets: [
     { name: "TeyvatMelody-Setup-1.2.0.exe", browser_download_url: "https://github.com/x/a.exe", size: 100 },
     { name: "TeyvatMelody-1.2.0-x64.zip", browser_download_url: "https://github.com/x/a.zip", size: 200 },
+    { name: "TeyvatMelody-1.2.0-x86_64.AppImage", browser_download_url: "https://github.com/x/a.AppImage", size: 300 },
+    { name: "TeyvatMelody-1.2.0-x86_64.tar.gz", browser_download_url: "https://github.com/x/a.tar.gz", size: 400 },
     { name: "latest.yml", browser_download_url: "https://github.com/x/latest.yml", size: 1 },
   ],
 };
@@ -56,23 +58,41 @@ const RELEASE = {
 
     // ---- pickAssets ----
     const assets = pickAssets(RELEASE.assets);
-    ok("只保留 exe / zip", assets.length === 2 && assets.every((a) => /\.(exe|zip)$/.test(a.name)), JSON.stringify(assets.map((a) => a.name)));
+    ok(
+      "只保留可下载的产物（exe / zip / AppImage / tar.gz）",
+      assets.length === 4 && assets.every((a) => /\.(exe|zip|appimage|tar\.gz)$/i.test(a.name)),
+      JSON.stringify(assets.map((a) => a.name))
+    );
+    ok("⚠️ 不会漏掉 Linux 产物（否则 Linux 上挑不出可下载的包）",
+       assets.some((a) => /\.appimage$/i.test(a.name)) && assets.some((a) => /\.tar\.gz$/i.test(a.name)),
+       JSON.stringify(assets.map((a) => a.name)));
     ok("保留下载地址与大小", assets[0].url.includes("github.com") && assets[0].size === 100);
     ok("无 assets 时返回空数组", pickAssets(undefined).length === 0);
 
     // ---- pickAssetFor：按分发方式挑要下载的包 ----
-    const both = pickAssets(RELEASE.assets); // Setup exe + zip
-    ok("安装版优先 Setup exe（下完可直接拉起安装向导）", /\.exe$/i.test(pickAssetFor(both, true)?.name || ""), JSON.stringify(pickAssetFor(both, true)));
-    ok("免安装版优先 zip（避免在系统里多装一份）", /\.zip$/i.test(pickAssetFor(both, false)?.name || ""), JSON.stringify(pickAssetFor(both, false)));
-    ok("只有 exe 时免安装版也退回 exe", /\.exe$/i.test(pickAssetFor([{ name: "a-Setup-1.0.0.exe", url: "u", size: 1 }], false)?.name || ""));
-    ok("只有 zip 时安装版也退回 zip", /\.zip$/i.test(pickAssetFor([{ name: "a.zip", url: "u", size: 1 }], true)?.name || ""));
-    ok("无可用资产时返回 null", pickAssetFor([], true) === null && pickAssetFor(undefined, false) === null);
+    const both = pickAssets(RELEASE.assets);
+    // ⚠️ 平台要显式传：不传就跟着跑测试的机器走，CI 在 ubuntu 上会得到 Linux 的结果
+    const W = "win32";
+    const L = "linux";
+    ok("安装版优先 Setup exe（下完可直接拉起安装向导）", /\.exe$/i.test(pickAssetFor(both, true, W)?.name || ""), JSON.stringify(pickAssetFor(both, true, W)));
+    ok("免安装版优先 zip（避免在系统里多装一份）", /\.zip$/i.test(pickAssetFor(both, false, W)?.name || ""), JSON.stringify(pickAssetFor(both, false, W)));
+    ok("只有 exe 时免安装版也退回 exe", /\.exe$/i.test(pickAssetFor([{ name: "a-Setup-1.0.0.exe", url: "u", size: 1 }], false, W)?.name || ""));
+    ok("只有 zip 时安装版也退回 zip", /\.zip$/i.test(pickAssetFor([{ name: "a.zip", url: "u", size: 1 }], true, W)?.name || ""));
+    ok("无可用资产时返回 null", pickAssetFor([], true, W) === null && pickAssetFor(undefined, false, W) === null);
+
+    // ---- Linux：只挑 AppImage / tar.gz，绝不挑到 Windows 的包 ----
+    ok("⚠️ Linux 优先 AppImage", /\.appimage$/i.test(pickAssetFor(both, false, L)?.name || ""), JSON.stringify(pickAssetFor(both, false, L)));
+    ok("⚠️ Linux 不会挑到 .exe（下载了也跑不起来）", !/\.exe$/i.test(pickAssetFor(both, true, L)?.name || ""), JSON.stringify(pickAssetFor(both, true, L)));
+    ok("⚠️ Linux 不会挑到 .zip（那是 Windows 免安装包）", !/\.zip$/i.test(pickAssetFor(both, false, L)?.name || ""));
+    ok("没有 AppImage 时退回 tar.gz", /\.tar\.gz$/i.test(pickAssetFor([{ name: "a-1.0.0-x86_64.tar.gz", url: "u", size: 1 }], false, L)?.name || ""));
+    ok("Linux 上只有 Windows 包时返回 null（宁可不更新，也不下错平台）",
+       pickAssetFor([{ name: "a-Setup-1.0.0.exe", url: "u", size: 1 }], true, L) === null);
 
     // ---- checkForUpdate：有新版 ----
     const up = await checkForUpdate("1.0.0", { fetchImpl: fakeFetch({ json: RELEASE }) });
     ok("有新版本时 hasUpdate=true", up.ok && up.hasUpdate && up.latest === "1.2.0", JSON.stringify(up));
     ok("带出当前版本 / 说明 / 页面地址", up.current === "1.0.0" && up.notes.includes("修复了搜索") && up.pageUrl.includes("/tag/v1.2.0"));
-    ok("带出可下载资产", up.assets.length === 2, JSON.stringify(up.assets));
+    ok("带出可下载资产（含 Linux 产物）", up.assets.length === 4, JSON.stringify(up.assets));
 
     // ---- 已是最新 ----
     const same = await checkForUpdate("1.2.0", { fetchImpl: fakeFetch({ json: RELEASE }) });
