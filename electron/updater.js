@@ -33,15 +33,9 @@ function isNewer(a, b) {
 }
 
 /** 从 Release 响应里挑出与当前平台匹配的下载项（Windows 安装包 / 免安装包）。 */
-/**
- * 挑出可下载的产物。
- *
- * ⚠️ 白名单要带上 Linux 的扩展名：发布页同时挂 Windows 与 Linux 产物，
- * 只留 `.exe|zip` 的话 Linux 上会「检查得到新版本、却挑不出可下载的包」。
- */
 function pickAssets(assets) {
   return (assets || [])
-    .filter((a) => /\.(exe|zip|appimage|tar\.gz)$/i.test(a.name || ""))
+    .filter((a) => /\.(exe|zip)$/i.test(a.name || ""))
     .map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size || 0 }));
 }
 
@@ -53,27 +47,8 @@ function pickAssets(assets) {
  * @param {boolean} installed 是否安装版
  * @returns {{name:string,url:string,size:number}|null}
  */
-/**
- * 从 Release 资产里挑出当前平台该下载的那个。
- *
- * ⚠️ 必须按平台挑：发布页上同时挂着 Windows 与 Linux 的产物，
- * 而 `.exe` / `.zip` 是 Windows 的 —— Linux 上挑到它们，下载下来也跑不起来。
- *
- * @param {{name:string}[]} assets
- * @param {boolean} installed 是否安装版（仅 Windows 有意义）
- * @param {string} [platform] 便于自检注入；缺省取当前平台
- */
-function pickAssetFor(assets, installed, platform) {
-  const plat = platform || process.platform;
+function pickAssetFor(assets, installed) {
   const list = assets || [];
-
-  if (plat === "linux") {
-    // Linux 没有安装程序：AppImage 免安装、单文件，是首选；tar.gz 兜底。
-    const appimage = list.find((a) => /\.appimage$/i.test(a.name));
-    const targz = list.find((a) => /\.tar\.gz$/i.test(a.name));
-    return appimage || targz || null;
-  }
-
   const setup = list.find((a) => /setup/i.test(a.name) && /\.exe$/i.test(a.name)) || list.find((a) => /\.exe$/i.test(a.name));
   const zip = list.find((a) => /\.zip$/i.test(a.name));
   return (installed ? setup || zip : zip || setup) || null;

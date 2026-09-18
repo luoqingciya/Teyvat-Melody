@@ -52,16 +52,8 @@ ok(
   "installDir：主进程 exe（就在根下）也能定位到根",
   installDir(path.join(portable.exeDir, "TeyvatMelody.exe")) === portable.exeDir
 );
-// ⚠️ 这个判定只在 Windows 上有意义：Linux 没有卸载程序这个概念（AppImage / tar.gz
-//    都是免安装的，deb 由包管理器管），实现里非 win32 一律返回 false。
-//    所以断言必须跟着平台走 —— 第一版写死了 Windows 的期望，CI 在 ubuntu 上直接红。
-if (process.platform === "win32") {
-  ok("安装版判定：有 Uninstall *.exe → true", isInstalledBuild(installed.exeDir) === true);
-  ok("免安装版判定：没有卸载程序 → false", isInstalledBuild(portable.exeDir) === false);
-} else {
-  ok("非 Windows：一律按免安装版处理（有卸载程序也返回 false）", isInstalledBuild(installed.exeDir) === false);
-  ok("非 Windows：免安装版仍是 false", isInstalledBuild(portable.exeDir) === false);
-}
+ok("安装版判定：有 Uninstall *.exe → true", isInstalledBuild(installed.exeDir) === true);
+ok("免安装版判定：没有卸载程序 → false", isInstalledBuild(portable.exeDir) === false);
 ok("安装版判定：目录不存在时不抛错", isInstalledBuild(path.join(portable.tmp, "nope")) === false);
 
 ok(
