@@ -537,7 +537,18 @@ function createTray() {
   const iconPath = IS_DEV
     ? path.join(__dirname, "..", "resources", "TeyvatMelody.ico")
     : path.join(process.resourcesPath, "resources", "TeyvatMelody.ico");
-  tray = new Tray(fs.existsSync(iconPath) ? iconPath : nativeImage.createEmpty());
+  // ⚠️ 托盘创建失败**不能把应用带崩**。
+  // `new Tray()` 在系统托盘不可用时会直接抛（Linux 缺 StatusNotifier 宿主、
+  // Windows 上 explorer.exe 崩了/正在重启也会失败），而这里在启动流程里 ——
+  // 一旦抛出，用户看到的就是「双击图标毫无反应」。
+  // 没有托盘只是少个入口，主窗口与播放都还能正常用，所以降级继续。
+  try {
+    tray = new Tray(fs.existsSync(iconPath) ? iconPath : nativeImage.createEmpty());
+  } catch (e) {
+    logger.warn(`[tray] 托盘创建失败，已降级为无托盘运行：${e.message}`);
+    tray = null;
+    return;
+  }
   tray.setToolTip("提瓦特旋律");
   tray.setContextMenu(
     Menu.buildFromTemplate([
