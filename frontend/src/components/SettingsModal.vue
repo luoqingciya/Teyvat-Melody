@@ -714,6 +714,17 @@
               </button>
             </div>
 
+            <!-- 日志：出问题时让用户能把现场发过来（打包后没有控制台，不落盘就什么都没有） -->
+            <div v-if="logDir" class="settings__row">
+              <span>{{ t("settings.logDir") }}</span>
+              <span class="settings__value settings__value--path" :title="logFile">{{ logDir }}</span>
+            </div>
+            <div v-if="logDir" class="settings__row settings__row--end">
+              <button class="ui-btn ui-btn--ghost settings__action" @click="openLogDir">
+                {{ t("settings.openLogDir") }}
+              </button>
+            </div>
+
             <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
             <div class="settings__row settings__row--end">
               <button
@@ -805,6 +816,7 @@ import { useUpdater } from "@/composables/useUpdater";
 import { useApi } from "@/composables/useApi";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { actionsFor, formatAccelerator } from "@/utils/shortcuts";
+import { toastError } from "@/utils/toast";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -1036,6 +1048,31 @@ async function loadDataDir() {
   }
 }
 
+/** 日志目录（出问题时让用户直接打开、把文件发过来） */
+const logDir = ref("");
+const logFile = ref("");
+
+async function loadLogPath() {
+  try {
+    const r = await window.pywebview?.api?.getLogPath?.();
+    if (r && r.ok) {
+      logDir.value = r.dir || "";
+      logFile.value = r.file || "";
+    }
+  } catch {
+    /* 拿不到就不显示这一行 */
+  }
+}
+
+async function openLogDir() {
+  try {
+    const r = await window.pywebview?.api?.openLogDir?.();
+    if (r && !r.ok) toastError(r.message || t("settings.openLogFailed"));
+  } catch (e) {
+    toastError(e.message);
+  }
+}
+
 /** 在系统资源管理器里打开数据目录 */
 function openDataDir() {
   const api = window.pywebview?.api;
@@ -1263,6 +1300,7 @@ watch(
       loadSources();
       loadAppVersion();
       loadDataDir();
+      loadLogPath();
       loadCache();
       loadProxy();
       clearInterval(cacheTimer);

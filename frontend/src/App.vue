@@ -13,6 +13,7 @@ import { applyCustomFonts, setAppFont } from "@/utils/fonts";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { songCoverUrl } from "@/utils/songCover";
 import { useUpdater } from "@/composables/useUpdater";
+import { toast, toastError } from "@/utils/toast";
 
 const player = usePlayerStore();
 const library = useLibraryStore();
@@ -114,6 +115,14 @@ onMounted(async () => {
   player.init();
   // 快捷键：装上监听（软件内 keydown + 主进程转发来的全局动作），并把已保存的全局键注册一遍
   useShortcuts().install();
+  // 后端崩溃 / 恢复：必须让用户看到发生了什么。
+  // 以前后端一挂，界面表现只是「所有操作都没反应」，用户完全不知道出了什么事。
+  const api = window.pywebview?.api;
+  api?.onBackendDied?.((p) => {
+    if (p && p.fatal) toastError("后台服务已停止，且多次重启失败；可在「设置 → 关于与更新」里打开日志目录", 8000);
+    else toastError(`后台服务意外退出，正在自动重启（第 ${(p && p.attempt) || 1} 次）…`, 6000);
+  });
+  api?.onBackendAlive?.(() => toast("后台服务已恢复"));
   config.applyTheme();
   config.applyGlassFx();
   config.applyAccent();

@@ -51,3 +51,6 @@ app/__test-*.py
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 运行时日志（<数据根>/logs）—— 出问题时让用户自己打开，不入库
+logs/

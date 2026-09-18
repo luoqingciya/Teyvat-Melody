@@ -216,6 +216,9 @@ const zh = {
   "settings.done": "完成",
   "settings.dataDir": "数据目录",
   "settings.openDataDir": "打开数据目录",
+  "settings.logDir": "日志目录",
+  "settings.openLogDir": "打开日志目录",
+  "settings.openLogFailed": "打不开日志目录",
   // 设置：自定义源（洛雪源脚本）
   "settings.sources": "自定义源",
   "settings.sourcesTip": "兼容洛雪音乐自定义源脚本（.js），源为第三方代码，请自行确认可信后导入",
@@ -515,6 +518,9 @@ const en = {
   "settings.done": "Done",
   "settings.dataDir": "Data folder",
   "settings.openDataDir": "Open data folder",
+  "settings.logDir": "Log folder",
+  "settings.openLogDir": "Open log folder",
+  "settings.openLogFailed": "Could not open the log folder",
   // Settings: custom sources (LX Music source scripts)
   "settings.sources": "Custom Sources",
   "settings.sourcesTip": "Compatible with LX Music custom source scripts (.js). Sources are third-party code — import only if you trust them",

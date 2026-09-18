@@ -52,6 +52,21 @@ api.onShortcutAction = (cb) => {
 api.toggleMainWindow = () => invoke("win:op", { op: "toggle" });
 api.quitApp = () => invoke("win:op", { op: "quit" });
 // 桌面歌词：锁定（鼠标穿透）/ 置顶
+// 日志：出问题时用户能把现场发给我们
+api.getLogPath = () => invoke("logs:path");
+api.openLogDir = () => invoke("logs:open");
+api.reportError = (payload) => invoke("logs:report", payload || {});
+// 后端崩溃 / 恢复
+api.onBackendDied = (cb) => {
+  const h = (_e, p) => cb(p || {});
+  ipcRenderer.on("backend:died", h);
+  return () => ipcRenderer.removeListener("backend:died", h);
+};
+api.onBackendAlive = (cb) => {
+  const h = () => cb();
+  ipcRenderer.on("backend:alive", h);
+  return () => ipcRenderer.removeListener("backend:alive", h);
+};
 api.toggleLyricsLock = () => invoke("lyrics:lock");
 api.toggleLyricsTopmost = () => invoke("lyrics:topmost");
 // 切歌桌面通知

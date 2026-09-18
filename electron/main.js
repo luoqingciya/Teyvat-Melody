@@ -14,6 +14,7 @@ const onlineSearch = require("./onlineSearch");
 const onlineLyric = require("./onlineLyric");
 const updater = require("./updater");
 const appConfig = require("./appConfig");
+const { createLogger, levelForBackendLine } = require("./logger");
 const proxyAgent = require("./proxyAgent");
 const { httpGetStream } = require("./httpStream");
 const { candidatePorts } = require("./backendPort");
@@ -92,6 +93,16 @@ function migrateLegacyData(newRoot, legacyRoots) {
     } catch (_) {}
   }
 })();
+
+/**
+ * 落盘日志。
+ *
+ * ⚠️ 打包后的应用**没有控制台** —— 光靠 console.* 等于什么都没记。
+ * 放在数据根目录下（跟 cache/ data/ 同级），卸载前用户能自己备份，
+ * 设置页「关于与更新」里也有「打开日志目录」。
+ * 开发时额外回显到控制台（打包后没人看控制台，默认关）。
+ */
+const logger = createLogger(path.join(dataRoot(), "logs"), { echo: IS_DEV });
 
 let backendProc = null;
 let mainWindow = null;
@@ -208,14 +219,81 @@ function locateBackendExe() {
   throw new Error("未找到后端程序 TeyvatBackend.exe，请检查 resources/backend 目录是否完整");
 }
 
+// 后端崩溃后的自动重启策略：窗口期内最多重启几次，避免「崩→重启→崩」死循环。
+const BACKEND_RESTART_WINDOW_MS = 60 * 1000;
+const BACKEND_MAX_RESTARTS = 3;
+let backendRestarts = 0;
+let lastBackendStart = 0;
+
+/** 通知渲染进程（窗口可能还没建好 / 已销毁） */
+function notifyRenderer(channel, payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  } catch (_) {
+    /* 窗口不在就算了，日志里还有 */
+  }
+}
+
 function startBackend() {
   const { cmd, args, cwd } = backendCommand();
-  // 把选定的端口显式传给后端（缺省 5000 是给 `npm run dev:backend` 单独跑时用的）
-  backendProc = spawn(cmd, [...args, `--port=${backendPort}`], { cwd, stdio: "ignore" });
-  backendProc.on("exit", (code) => {
-    console.log("[backend] exited:", code);
-    backendProc = null;
+  lastBackendStart = Date.now();
+  logger.info(`[backend] 启动 pid 待定: ${path.basename(cmd)} ${args.join(" ")} --port=${backendPort}`);
+  // ⚠️⚠️ 不能用 stdio:"ignore" —— 那会把 Python 的 traceback 整个丢掉。
+  // 打包后的应用没有控制台，后端一崩我们就**什么都拿不到**，只能靠复现去猜。
+  // 改成接管 stdout/stderr 并写进日志，崩溃现场才留得下来。
+  backendProc = spawn(cmd, [...args, `--port=${backendPort}`], {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  // 后端的 stdout/stderr 都逐行记，但**按内容判级别** ——
+  // Flask 把启动横幅和访问日志也写进 stderr，一律当 error 会把真正的报错淹掉。
+  const pipeBackend = (buf) => {
+    for (const line of String(buf).split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      logger[levelForBackendLine(line)](line);
+    }
+  };
+  backendProc.stdout?.on("data", pipeBackend);
+  backendProc.stderr?.on("data", pipeBackend);
+  backendProc.on("error", (e) => logger.error(`[backend] 启动失败: ${e.message}`));
+  backendProc.on("exit", (code, signal) => {
+    backendProc = null;
+    if (app.isQuiting) {
+      logger.info("[backend] 已退出（应用正在关闭）");
+      return;
+    }
+    logger.error(`[backend] 意外退出: code=${code} signal=${signal}`);
+    onBackendDied(code);
+  });
+}
+
+/**
+ * 后端意外退出时的处理。
+ *
+ * 以前这里只是 `console.log` 一句 —— 打包后没人看得到，界面也不会有任何反应，
+ * 用户看到的就是「用着用着所有操作都没反应了」。现在：记日志 + 通知界面 + 有限重启。
+ */
+function onBackendDied(code) {
+  // 距上次启动已经超过窗口期 → 说明是稳定运行了一阵子才崩的，重新计数
+  if (Date.now() - lastBackendStart > BACKEND_RESTART_WINDOW_MS) backendRestarts = 0;
+
+  if (backendRestarts >= BACKEND_MAX_RESTARTS) {
+    logger.error(`[backend] ${BACKEND_RESTART_WINDOW_MS / 1000}s 内已重启 ${backendRestarts} 次，放弃自动重启`);
+    notifyRenderer("backend:died", { fatal: true, code });
+    return;
+  }
+
+  backendRestarts += 1;
+  logger.warn(`[backend] 尝试自动重启（第 ${backendRestarts}/${BACKEND_MAX_RESTARTS} 次）`);
+  notifyRenderer("backend:died", { fatal: false, code, attempt: backendRestarts });
+
+  setTimeout(async () => {
+    if (app.isQuiting) return;
+    startBackend();
+    const ok = await waitBackend();
+    logger[ok ? "info" : "error"](`[backend] 重启${ok ? "成功" : "后仍无法连接"}`);
+    if (ok) notifyRenderer("backend:alive", {});
+  }, 800);
 }
 
 /** 让操作系统分配一个空闲端口（用于后端，避免多实例抢同一个端口） */
@@ -777,6 +855,32 @@ ipcMain.handle("py:rpc", async (_e, { method, args }) => {
   const body = await res.json();
   if (body.code !== 200) throw new Error(body.message || "RPC failed");
   return body.data;
+});
+
+// ---------------- 日志 ----------------
+ipcMain.handle("logs:path", () => ({ ok: true, dir: logger.dir(), file: logger.path() }));
+
+ipcMain.handle("logs:open", async () => {
+  try {
+    fs.mkdirSync(logger.dir(), { recursive: true });
+  } catch (_) {
+    /* 建不出来就让 openPath 去报真实错误 */
+  }
+  const err = await shell.openPath(logger.dir());
+  return err ? { ok: false, message: err } : { ok: true };
+});
+
+/**
+ * 渲染进程报上来的错误：Vue 渲染期错误 / 未捕获异常 / 未处理的 Promise 拒绝。
+ *
+ * ⚠️ 这些以前只出现在用户自己的控制台里 —— 打包后**等于不存在**。
+ * 界面坏掉时我们连「哪个组件、哪一行」都不知道。现在统一落到日志里。
+ */
+ipcMain.handle("logs:report", (_e, { level, message, stack }) => {
+  const lv = level === "warn" ? "warn" : "error";
+  logger[lv](`[renderer] ${message}`);
+  if (stack) logger.block(lv, String(stack).split("\n").slice(0, 12).join("\n"));
+  return { ok: true };
 });
 
 // ---------------- 桌面歌词：锁定 / 置顶 ----------------
@@ -1421,6 +1525,8 @@ if (!gotLock) {
 
   app.on("before-quit", () => {
     app.isQuiting = true;
+    // ⚠️ 先置位再 kill：否则 exit 回调会把它当成「意外崩溃」而尝试自动重启
+    logger.info("[app] 正在退出");
     globalShortcut.unregisterAll();
     if (backendProc) {
       try { backendProc.kill(); } catch (_) { /* ignore */ }
