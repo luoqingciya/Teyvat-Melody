@@ -11,6 +11,30 @@ const os = require("os");
 const path = require("path");
 const { createZip, readZip, crc32 } = require("../electron/zip");
 
+/**
+ * 找一个可用的 Python 解释器（用来做「独立实现」验证）。
+ * 优先项目 venv，其次 PATH 上的 python3/python —— CI 在 ubuntu 上，只有后者。
+ */
+function findPython() {
+  const cands = [
+    process.env.PYTHON,
+    path.join(__dirname, "..", ".venv", "Scripts", "python.exe"),
+    path.join(__dirname, "..", ".venv", "bin", "python"),
+    "python3",
+    "python",
+  ].filter(Boolean);
+  for (const c of cands) {
+    try {
+      execFileSync(c, ["-c", "import zipfile"], { stdio: "ignore" });
+      return c;
+    } catch {
+      /* 试下一个 */
+    }
+  }
+  return null;
+}
+
+
 let FAILED = 0;
 function ok(name, cond, extra) {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}` + (!cond && extra ? `  → ${extra}` : ""));
@@ -57,8 +81,13 @@ ok("不是 zip 的 buffer 会报错", (() => {
   try { readZip(Buffer.alloc(100, 7)); return false; } catch (e) { return /合法的 zip/.test(e.message); }
 })());
 
-console.log("\n---- 交给系统工具验证（关键）----");
+console.log("\n---- 用「别的实现」验证（关键）----");
 {
+  // ⚠️ 必须用**独立实现**来验，不能只做「自己写、自己读」的往返 ——
+  //    那样两边犯同一个错也会互相通过。
+  // ⚠️⚠️ 也别依赖某个平台的工具：CI 在 ubuntu 上跑，Windows 自带的 Expand-Archive 根本不存在
+  //    （第一版就是这么挂的：本地全绿、CI 直接红）。改用 **Python 的 zipfile** ——
+  //    跨平台、本项目必然有 Python、而且是另一套完全独立的实现。
   const dir = path.join(tmp, "external");
   fs.mkdirSync(dir, { recursive: true });
   const zipPath = path.join(dir, "backup.zip");
@@ -66,49 +95,51 @@ console.log("\n---- 交给系统工具验证（关键）----");
     "data/library.db": "SQLite format 3\u0000fake",
     "cache/config.json": '{"proxy":{"enabled":true,"host":"127.0.0.1","port":7890}}',
     "sources/test-source.js": "// hello from the backup",
+    "sources/中文名.js": "// 中文文件名",
   };
   fs.writeFileSync(
     zipPath,
     createZip(Object.entries(payload).map(([name, text]) => ({ name, data: Buffer.from(text, "utf8") })))
   );
 
-  // ① bsdtar（Windows 10+ 自带）能否列出内容
-  let listed = "";
-  try {
-    listed = execFileSync("tar", ["-tf", zipPath], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch (e) {
-    listed = "";
-    console.log("  （tar 不可用，跳过这一项）", e.message);
-  }
-  if (listed) {
-    ok("⚠️ 系统 tar 能列出备份包内容", /data\/library\.db/.test(listed), listed.replace(/\n/g, " "));
-    ok("tar 列出的条目数与写入一致", listed.trim().split("\n").length === 3, listed.replace(/\n/g, " "));
-  }
+  const py = findPython();
+  ok("⚠️ 找到了 Python（独立验证要用它）", !!py, "没找到 python，无法做独立验证");
 
-  // ② PowerShell Expand-Archive 能否真正解出来（内容要对）
-  const outDir = path.join(tmp, "expanded");
-  let expanded = false;
-  try {
-    execFileSync(
-      "powershell",
-      ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${outDir}' -Force`],
-      { stdio: ["ignore", "ignore", "pipe"] }
-    );
-    expanded = true;
-  } catch (e) {
-    console.log("  （Expand-Archive 失败）", String(e.stderr || e.message).slice(0, 200));
-  }
-  if (expanded) {
-    const cfg = path.join(outDir, "cache", "config.json");
-    ok("⚠️ 系统工具解出来的文件存在", fs.existsSync(cfg), cfg);
+  if (py) {
+    // ① 列内容
+    let listed = "";
+    try {
+      listed = execFileSync(py, ["-m", "zipfile", "-l", zipPath], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch (e) {
+      console.log("  列目录失败:", String(e.stderr || e.message).slice(0, 200));
+    }
+    ok("⚠️ 独立实现能读出条目名", /data\/library\.db/.test(listed), listed.replace(/\n/g, " ").slice(0, 200));
     ok(
-      "⚠️ 解出来的内容与写入一致",
-      fs.existsSync(cfg) && fs.readFileSync(cfg, "utf8") === payload["cache/config.json"],
-      fs.existsSync(cfg) ? fs.readFileSync(cfg, "utf8").slice(0, 60) : "(无文件)"
+      "⚠️ 独立实现能读出中文文件名（UTF-8 标记生效）",
+      /中文名\.js/.test(listed),
+      listed.replace(/\n/g, " ").slice(0, 200)
     );
-    ok("子目录结构被保留", fs.existsSync(path.join(outDir, "sources", "test-source.js")));
-  } else {
-    ok("系统工具解压验证", false, "Expand-Archive 没能解出内容");
+
+    // ② 真正解出来并逐字节比对
+    const outDir = path.join(tmp, "expanded");
+    let extracted = false;
+    try {
+      execFileSync(py, ["-m", "zipfile", "-e", zipPath, outDir], { stdio: ["ignore", "ignore", "pipe"] });
+      extracted = true;
+    } catch (e) {
+      console.log("  解压失败:", String(e.stderr || e.message).slice(0, 200));
+    }
+    ok("独立实现能解开全部内容", extracted);
+    if (extracted) {
+      for (const [name, text] of Object.entries(payload)) {
+        const f = path.join(outDir, name);
+        const got = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
+        ok(`⚠️ 解出的「${name}」内容一致`, got === text, got === null ? "(文件不存在)" : got.slice(0, 60));
+      }
+    }
   }
 }
 
