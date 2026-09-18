@@ -15,7 +15,15 @@ const path = require("path");
 const PORT = 9222;
 const KEYWORD = process.argv[2] || "晴天 周杰伦";
 const ROOT = path.join(__dirname, ".."); // tools/ 的上一级即项目根
-const ELECTRON = path.join(ROOT, "node_modules", "electron", "dist", "electron.exe");
+/** Electron 可执行文件：Windows 是 electron.exe，Linux/macOS 是 electron（无扩展名）。
+ *  ⚠️ 写死 .exe 会让这套 E2E 只能在 Windows 上跑 —— CI 想在 ubuntu 上跑就废了。 */
+const ELECTRON = path.join(
+  ROOT,
+  "node_modules",
+  "electron",
+  "dist",
+  process.platform === "win32" ? "electron.exe" : "electron"
+);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

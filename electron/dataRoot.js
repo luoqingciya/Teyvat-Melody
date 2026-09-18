@@ -17,6 +17,7 @@
 // ⚠️ 这套规则与后端 `app/utils/paths.py` 必须完全一致（两边各自要独立算数据目录），
 // 改一处就要同步改另一处，并各自跑自检（tests/data-root.test.js / tests/paths.test.py）。
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 // 安装版的数据目录名。**仅用于识别 v1.0.6 的旧位置**。
@@ -47,8 +48,15 @@ function installDir(exePath) {
   return start;
 }
 
-/** 该目录是否为「安装版」（存在 `Uninstall *.exe`）。更新时据此选包，与数据位置无关。 */
+/**
+ * 该目录是否为「安装版」（存在 `Uninstall *.exe`）。更新时据此选包，与数据位置无关。
+ *
+ * ⚠️ Linux 上没有卸载程序这个概念：AppImage / tar.gz 都是免安装的，deb 由包管理器管。
+ * 所以这里一律返回 false —— 界面会按「免安装版」措辞提示（下载后在文件管理器里定位），
+ * 对 AppImage 来说正好是对的。
+ */
 function isInstalledBuild(dir) {
+  if (process.platform !== "win32") return false;
   try {
     return fs.readdirSync(dir).some((n) => /^Uninstall .+\.exe$/i.test(n));
   } catch {
@@ -58,11 +66,58 @@ function isInstalledBuild(dir) {
 
 /**
  * 决定数据根目录。
- * @param {{isDev: boolean, exePath: string, projectRoot: string}} o
+ *
+ * Windows / macOS：数据放软件目录（EXE 同级），自包含可搬移。
+ *
+ * Linux 要分三种情况（**不能照搬 Windows 那条**）：
+ *   ① **AppImage**：`process.execPath` 指向 `/tmp/.mount_xxx/…` —— 那是只读的临时挂载点，
+ *      而且退出即消失。所以数据要放到 **`.AppImage` 文件旁边**（`$APPIMAGE` 是它的真实路径），
+ *      这样仍然满足「整个目录自包含、可搬移」的初衷。
+ *   ② **tar.gz 免安装版**：exe 就在真实目录里，且通常可写 → 和 Windows 一样放同级。
+ *   ③ **deb / 装到 `/opt` 这类只读位置**：同级写不进去 → 退回 XDG 数据目录
+ *      （`$XDG_DATA_HOME/TeyvatMelody`，缺省 `~/.local/share/TeyvatMelody`）。
+ *      这条**必须**有，否则装成 deb 之后应用一启动就因为写不了数据而报错。
+ *
+ * ⚠️ 这套规则与后端 `app/utils/paths.py` 必须完全一致（两边各自要独立算数据目录），
+ * 改一处就要同步改另一处，并各自跑自检。
+ *
+ * @param {{isDev: boolean, exePath: string, projectRoot: string,
+ *          platform?: string, env?: object, canWrite?: (dir: string) => boolean}} o
  */
-function resolveDataRoot({ isDev, exePath, projectRoot }) {
+function resolveDataRoot({ isDev, exePath, projectRoot, platform, env, canWrite }) {
   if (isDev) return projectRoot;
-  return installDir(exePath);
+  const plat = platform || process.platform;
+  if (plat !== "linux") return installDir(exePath);
+
+  const e = env || process.env;
+  const appImage = e.APPIMAGE;
+  if (appImage) return path.dirname(path.resolve(appImage));
+
+  const dir = installDir(exePath);
+  const writable = canWrite ? canWrite(dir) : isDirWritable(dir);
+  if (writable) return dir;
+
+  return xdgDataRoot(e);
+}
+
+/** 目录能不能写：真去建一个临时文件再删掉（比看权限位可靠 —— 还要考虑只读挂载） */
+function isDirWritable(dir) {
+  const probe = path.join(dir, `.write-probe-${process.pid}`);
+  try {
+    fs.writeFileSync(probe, "");
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** XDG 数据目录：`$XDG_DATA_HOME/TeyvatMelody`，缺省 `~/.local/share/TeyvatMelody` */
+function xdgDataRoot(env) {
+  const e = env || process.env;
+  const home = e.HOME || "";
+  const base = e.XDG_DATA_HOME || (home ? path.join(home, ".local", "share") : "");
+  return base ? path.join(base, APP_DIR_NAME) : path.join(os.tmpdir(), APP_DIR_NAME);
 }
 
 /** 需要随应用一起搬移 / 保留的数据目录 */
@@ -130,6 +185,8 @@ function migrateLegacyData(newRoot, legacyRoots) {
 }
 
 module.exports = {
+  isDirWritable,
+  xdgDataRoot,
   APP_DIR_NAME,
   DATA_DIRS,
   ROOT_MARKERS,

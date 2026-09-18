@@ -107,6 +107,74 @@ def main() -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+    # ---- Linux 的数据根规则 ----
+    # ⚠️ Linux 不能照搬「数据放可执行文件同级」：
+    #   · AppImage 的 sys.executable 在 /tmp/.mount_xxx（只读、退出即消失）→ 放到 .AppImage 旁边
+    #   · deb 装到 /opt 这类只读位置 → 退回 XDG 数据目录
+    # 这两条漏掉任何一条，Linux 版都会「装得上、用不了」。
+    # ⚠️ 这套规则必须与 electron/dataRoot.js 完全一致（那边有对应的自检）。
+    print("\n---- Linux ----")
+    tmp = Path(tempfile.mkdtemp(prefix="tm-paths-linux-"))
+    try:
+        exe_dir = tmp / "TeyvatMelody"
+        (exe_dir / "resources" / "backend" / "TeyvatBackend").mkdir(parents=True)
+        (exe_dir / "TeyvatMelody").write_text("", "utf-8")
+        exe = exe_dir / "resources" / "backend" / "TeyvatBackend" / "TeyvatBackend"
+        exe.write_text("", "utf-8")
+
+        def resolve(**kw):
+            base = dict(frozen=True, exe=exe, project_root=tmp, platform="linux")
+            base.update(kw)
+            return paths._resolve_app_root(**base)
+
+        # ① AppImage
+        app_image_dir = tmp / "apps"
+        app_image_dir.mkdir(parents=True)
+        app_image = app_image_dir / "TeyvatMelody-1.0.25-x86_64.AppImage"
+        r1 = resolve(env={"APPIMAGE": str(app_image), "HOME": "/home/someone"}, can_write=lambda _p: True)
+        ok("⚠️ AppImage：数据放在 .AppImage 文件旁边", r1 == app_image_dir.resolve(), str(r1))
+        ok("AppImage：不会用只读挂载点当数据目录", ".mount_" not in str(r1), str(r1))
+
+        # ② tar.gz 免安装版
+        r2 = resolve(env={"HOME": "/home/someone"}, can_write=lambda _p: True)
+        ok("tar.gz 免安装版：可写就放同级", r2 == exe_dir.resolve(), str(r2))
+
+        # ③ 只读安装位置 → XDG
+        r3 = resolve(env={"HOME": "/home/someone"}, can_write=lambda _p: False)
+        ok("⚠️ 只读安装位置 → 退回 XDG 数据目录",
+           r3 == Path("/home/someone/.local/share/TeyvatMelody"), str(r3))
+
+        r4 = resolve(env={"HOME": "/home/someone", "XDG_DATA_HOME": "/data/xdg"}, can_write=lambda _p: False)
+        ok("认 $XDG_DATA_HOME", r4 == Path("/data/xdg/TeyvatMelody"), str(r4))
+
+        r5 = resolve(env={}, can_write=lambda _p: False)
+        ok("没有 HOME 也不崩", isinstance(r5, Path) and len(str(r5)) > 0, str(r5))
+
+        # ④ Windows 行为不受影响
+        r6 = paths._resolve_app_root(frozen=True, exe=exe, project_root=tmp,
+                                     platform="win32", env={}, can_write=lambda _p: False)
+        ok("Windows 仍是同级（不看可写性）", r6 == exe_dir.resolve(), str(r6))
+
+        # ⑤ 开发模式
+        r7 = paths._resolve_app_root(frozen=False, exe=exe, project_root=tmp,
+                                     platform="linux", env={"APPIMAGE": str(app_image)})
+        ok("开发模式用项目目录", r7 == tmp, str(r7))  # 开发模式原样返回，不做 resolve
+
+        print("\n---- xdg_data_root / is_dir_writable ----")
+        ok("xdg 用 $XDG_DATA_HOME", paths.xdg_data_root({"XDG_DATA_HOME": "/x"}) == Path("/x/TeyvatMelody"))
+        ok("xdg 退回 ~/.local/share",
+           paths.xdg_data_root({"HOME": "/h"}) == Path("/h/.local/share/TeyvatMelody"))
+        ok("xdg 两者都没有也不崩", isinstance(paths.xdg_data_root({}), Path))
+
+        probe_dir = tmp / "writable"
+        probe_dir.mkdir()
+        ok("可写目录判定为真", paths.is_dir_writable(probe_dir) is True)
+        ok("不存在的目录判定为假", paths.is_dir_writable(probe_dir / "nope" / "deeper") is False)
+        ok("探测后不留临时文件", list(probe_dir.iterdir()) == [], str(list(probe_dir.iterdir())))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
     print("\n自检结束")
     return 1 if _failed else 0
 

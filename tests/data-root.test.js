@@ -18,6 +18,8 @@ const {
   resolveDataRoot,
   legacyLocalAppDataRoot,
   migrateLegacyData,
+  xdgDataRoot,
+  isDirWritable,
 } = require("../electron/dataRoot");
 
 const ok = (name, cond, extra) => {
@@ -222,5 +224,89 @@ const anyFile = (dir, name) => fs.existsSync(path.join(dir, name, "marker.txt"))
 
 fs.rmSync(portable.tmp, { recursive: true, force: true });
 fs.rmSync(installed.tmp, { recursive: true, force: true });
+
+// ---- Linux 的数据根规则 ----
+// ⚠️ Linux 不能照搬「数据放 EXE 同级」：
+//   · AppImage 的 execPath 在 /tmp/.mount_xxx（只读、退出即消失）→ 要放到 .AppImage 旁边
+//   · deb 装到 /opt 这类只读位置 → 要退回 XDG 数据目录
+// 这两条漏掉任何一条，Linux 版都会「装得上、用不了」。
+console.log("\n---- Linux ----");
+{
+  const tree = makeTree({ installed: false });
+  const base = { isDev: false, exePath: tree.exeDir + "/TeyvatMelody", projectRoot: tree.tmp };
+
+  // ① AppImage
+  const appImageDir = path.join(tree.tmp, "apps");
+  fs.mkdirSync(appImageDir, { recursive: true });
+  const appImagePath = path.join(appImageDir, "TeyvatMelody-1.0.25-x86_64.AppImage");
+  const r1 = resolveDataRoot({
+    ...base,
+    platform: "linux",
+    env: { APPIMAGE: appImagePath, HOME: "/home/someone" },
+    canWrite: () => true,
+  });
+  ok("⚠️ AppImage：数据放在 .AppImage 文件旁边", r1 === appImageDir, r1);
+  ok("AppImage：不会用只读挂载点当数据目录", !r1.includes(".mount_"), r1);
+
+  // ② tar.gz 免安装版：目录可写 → 同级
+  const r2 = resolveDataRoot({
+    ...base,
+    platform: "linux",
+    env: { HOME: "/home/someone" },
+    canWrite: () => true,
+  });
+  ok("tar.gz 免安装版：可写就放 EXE 同级", r2 === tree.exeDir, r2);
+
+  // ③ deb 之类装到只读位置 → XDG
+  const r3 = resolveDataRoot({
+    ...base,
+    platform: "linux",
+    env: { HOME: "/home/someone" },
+    canWrite: () => false,
+  });
+  // ⚠️ 用 path.join 拼期望值：本自检在 Windows 上也会跑，硬写 `/` 会假红
+  ok(
+    "⚠️ 只读安装位置 → 退回 XDG 数据目录",
+    r3 === path.join("/home/someone", ".local", "share", APP_DIR_NAME),
+    r3
+  );
+
+  const r4 = resolveDataRoot({
+    ...base,
+    platform: "linux",
+    env: { HOME: "/home/someone", XDG_DATA_HOME: "/data/xdg" },
+    canWrite: () => false,
+  });
+  ok("认 $XDG_DATA_HOME", r4 === path.join("/data/xdg", APP_DIR_NAME), r4);
+
+  const r5 = resolveDataRoot({
+    ...base,
+    platform: "linux",
+    env: {},
+    canWrite: () => false,
+  });
+  ok("没有 HOME 也不崩（退回临时目录）", typeof r5 === "string" && r5.length > 0, r5);
+
+  // ④ Windows 行为不受影响
+  const r6 = resolveDataRoot({ ...base, platform: "win32", env: {}, canWrite: () => false });
+  ok("Windows 仍是 EXE 同级（不看可写性）", r6 === tree.exeDir, r6);
+
+  // ⑤ 开发模式：一律用项目目录
+  const r7 = resolveDataRoot({ ...base, isDev: true, platform: "linux", env: { APPIMAGE: appImagePath } });
+  ok("开发模式用项目目录", r7 === tree.tmp, r7);
+}
+
+console.log("\n---- xdgDataRoot / isDirWritable ----");
+{
+  ok("xdg 用 $XDG_DATA_HOME", xdgDataRoot({ XDG_DATA_HOME: "/x" }) === path.join("/x", APP_DIR_NAME));
+  ok("xdg 退回 ~/.local/share", xdgDataRoot({ HOME: "/h" }) === path.join("/h", ".local", "share", APP_DIR_NAME));
+  ok("xdg 两者都没有也不崩", typeof xdgDataRoot({}) === "string");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-wr-"));
+  ok("可写目录判定为真", isDirWritable(tmp) === true);
+  ok("不存在的目录判定为假", isDirWritable(path.join(tmp, "nope", "deeper")) === false);
+  // 探测文件不该留下
+  ok("探测后不留临时文件", fs.readdirSync(tmp).length === 0, fs.readdirSync(tmp).join(", "));
+}
 
 console.log("\n自检结束");

@@ -6,7 +6,7 @@
   "author": "Teyvat Melody",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "dev": ".\\node_modules\\electron\\dist\\electron.exe .",
+    "dev": "electron .",
     "dev:backend": "python electron_backend.py",
     "build:frontend": "cd frontend && npm run build",
     "build": "electron-builder --publish never",
@@ -43,6 +43,10 @@
       {
         "from": "resources/TeyvatMelody.ico",
         "to": "resources/TeyvatMelody.ico"
+      },
+      {
+        "from": "resources/TeyvatMelody.png",
+        "to": "resources/TeyvatMelody.png"
       }
     ],
     "extraFiles": [
@@ -65,6 +69,17 @@
       "include": "resources/installer.nsh",
       "artifactName": "${productName}-Setup-${version}.${ext}",
       "uninstallDisplayName": "提瓦特旋律 Teyvat Melody"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "icon": "resources/TeyvatMelody.png",
+      "category": "AudioVideo;Audio;Player",
+      "synopsis": "Teyvat Melody",
+      "description": "本地音乐播放器（含在线音源、桌面歌词）",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }
