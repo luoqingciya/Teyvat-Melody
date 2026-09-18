@@ -725,6 +725,44 @@
               </button>
             </div>
 
+            <!-- 备份 / 恢复：README 一直提醒「卸载会连数据一起删」，这里是那条警告的兜底 -->
+            <div class="settings__group">
+              <h4 class="settings__label">{{ t("settings.backupGroup") }}</h4>
+              <p class="settings__tip">{{ t("settings.backupTip") }}</p>
+
+              <div class="settings__actions">
+                <button class="ui-btn settings__action" :disabled="backupBusy" @click="onCreateBackup">
+                  {{ t("settings.backupCreate") }}
+                </button>
+                <button
+                  v-if="!restoreConfirm"
+                  class="ui-btn ui-btn--ghost settings__action"
+                  :disabled="backupBusy"
+                  @click="onPickBackup"
+                >
+                  {{ t("settings.backupRestore") }}
+                </button>
+              </div>
+
+              <!-- 恢复会覆盖当前数据并重启，用行内二次确认（再弹一层模态太吵） -->
+              <div v-if="restoreConfirm" class="settings__notice settings__notice--warn">
+                <span class="settings__notice-title">{{ t("settings.backupConfirm", { name: restoreConfirm.name }) }}</span>
+                <span v-if="restoreConfirm.files" class="settings__notice-date">
+                  {{ t("settings.backupConfirmFiles", { n: restoreConfirm.files }) }}
+                </span>
+              </div>
+              <div v-if="restoreConfirm" class="settings__actions">
+                <button class="ui-btn settings__action" :disabled="backupBusy" @click="doRestore">
+                  {{ t("settings.backupConfirmYes") }}
+                </button>
+                <button class="ui-btn ui-btn--ghost settings__action" @click="restoreConfirm = null">
+                  {{ t("settings.backupConfirmNo") }}
+                </button>
+              </div>
+
+              <span v-if="backupMsg" class="settings__tip">{{ backupMsg }}</span>
+            </div>
+
             <!-- 按钮自身已说明用途，左侧不再重复放一个同名标签 -->
             <div class="settings__row settings__row--end">
               <button
@@ -817,6 +855,7 @@ import { useApi } from "@/composables/useApi";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { actionsFor, formatAccelerator } from "@/utils/shortcuts";
 import { toastError } from "@/utils/toast";
+import { toPlain } from "@/utils/bridge";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -1061,6 +1100,74 @@ async function loadLogPath() {
     }
   } catch {
     /* 拿不到就不显示这一行 */
+  }
+}
+
+/** 备份 / 恢复 */
+const backupBusy = ref(false);
+const backupMsg = ref("");
+const restoreConfirm = ref(null);
+
+async function onCreateBackup() {
+  const api = window.pywebview?.api;
+  if (!api?.createBackup) return;
+  backupBusy.value = true;
+  backupMsg.value = "";
+  try {
+    // ⚠️ 必须 toPlain：config 是 Vue 的响应式 Proxy，直接过 IPC 会
+    //    「An object could not be cloned」（contextBridge 那道边界过不去）。
+    //    设置存在 localStorage 里，主进程读不到，只能由这里传过去。
+    const r = await api.createBackup(toPlain(config.$state));
+    if (r?.canceled) return;
+    if (!r?.ok) {
+      toastError(r?.message || t("settings.backupFailed"));
+      return;
+    }
+    backupMsg.value = t("settings.backupDone", { n: r.files, size: formatBytes(r.bytes) });
+    if (r.skipped && r.skipped.length) backupMsg.value += t("settings.backupSkipped", { n: r.skipped.length });
+    // 数据库快照没拿到时如实提醒：这种备份的曲库可能是「旧」的
+    if (r.warnSnapshot) toastError(t("settings.backupSnapshotWarn"), 7000);
+  } catch (e) {
+    toastError(e.message);
+  } finally {
+    backupBusy.value = false;
+  }
+}
+
+async function onPickBackup() {
+  const api = window.pywebview?.api;
+  if (!api?.pickBackup) return;
+  backupMsg.value = "";
+  try {
+    const picked = await api.pickBackup();
+    if (picked?.canceled) return;
+    if (!picked?.ok) {
+      toastError(picked?.message || t("settings.backupBad"));
+      return;
+    }
+    const name = String(picked.path || "").split(/[\\\\/]/).pop();
+    restoreConfirm.value = { path: picked.path, name, files: picked.files };
+  } catch (e) {
+    toastError(e.message);
+  }
+}
+
+async function doRestore() {
+  const api = window.pywebview?.api;
+  const target = restoreConfirm.value;
+  if (!api?.restoreBackup || !target) return;
+  backupBusy.value = true;
+  try {
+    const r = await api.restoreBackup(target.path);
+    // 成功时主进程会直接重启应用，这里通常走不到；走到就是失败了
+    if (!r?.ok) {
+      restoreConfirm.value = null;
+      toastError(r?.message || t("settings.backupRestoreFailed"));
+    }
+  } catch (e) {
+    toastError(e.message);
+  } finally {
+    backupBusy.value = false;
   }
 }
 

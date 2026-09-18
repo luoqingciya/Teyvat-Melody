@@ -67,6 +67,11 @@ api.onBackendAlive = (cb) => {
   ipcRenderer.on("backend:alive", h);
   return () => ipcRenderer.removeListener("backend:alive", h);
 };
+// 备份 / 恢复（备份包是 zip；恢复会停后端并重启应用）
+api.createBackup = (settings) => invoke("backup:create", { settings: settings || {} });
+api.pickBackup = () => invoke("backup:pick");
+api.restoreBackup = (path) => invoke("backup:restore", { path });
+api.takeRestoredSettings = () => invoke("backup:takeRestoredSettings");
 api.toggleLyricsLock = () => invoke("lyrics:lock");
 api.toggleLyricsTopmost = () => invoke("lyrics:topmost");
 // 切歌桌面通知

@@ -15,6 +15,7 @@ const onlineLyric = require("./onlineLyric");
 const updater = require("./updater");
 const appConfig = require("./appConfig");
 const { createLogger, levelForBackendLine } = require("./logger");
+const backup = require("./backup");
 const proxyAgent = require("./proxyAgent");
 const { httpGetStream } = require("./httpStream");
 const { candidatePorts } = require("./backendPort");
@@ -855,6 +856,152 @@ ipcMain.handle("py:rpc", async (_e, { method, args }) => {
   const body = await res.json();
   if (body.code !== 200) throw new Error(body.message || "RPC failed");
   return body.data;
+});
+
+// ---------------- 备份 / 恢复 ----------------
+// 背景：README 一直提醒「卸载会连同数据一起删除」，但应用里没有任何备份手段。
+// 备份包是一个 zip（自己实现，见 electron/zip.js —— 项目零运行时依赖）。
+const RESTORED_SETTINGS = "settings.json";
+
+/**
+ * 让后端导出一份**一致**的数据库快照（SQLite 的 VACUUM INTO）。
+ *
+ * ⚠️ 不能直接拷 `data/library.db`：后端一直在跑，SQLite 处于 WAL 模式，
+ * 最近的写入可能还在 `-wal` 里没并进主库 —— 直接拷会得到「旧」的库；
+ * 把 `-wal`/`-shm` 一起拷又可能正好拷在写入中途，得到撕裂的库。
+ * 备份的意义就是「能还原」，拷出一个坏库等于白做。
+ *
+ * @returns {Promise<Buffer|null>} 拿不到就返回 null（调用方退回直接拷贝，并提醒用户）
+ */
+async function snapshotDatabase() {
+  const dest = path.join(app.getPath("temp"), `teyvat-snapshot-${Date.now()}.db`);
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/backup/snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dest }),
+    });
+    const json = await res.json();
+    if (json?.code !== 200) throw new Error(json?.message || `HTTP ${res.status}`);
+    return fs.readFileSync(dest);
+  } catch (e) {
+    logger.warn(`[backup] 数据库快照失败，退回直接拷贝（备份可能不一致）: ${e.message}`);
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(dest);
+    } catch {
+      /* 临时文件清不掉不影响备份本身 */
+    }
+  }
+}
+
+ipcMain.handle("backup:create", async (_e, { settings } = {}) => {
+  const dbSnapshot = await snapshotDatabase();
+  const r = backup.collect(dataRoot(), { settings, appVersion: app.getVersion(), dbSnapshot });
+  const buf = backup.createZip(r.entries);
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: "导出备份",
+    defaultPath: path.join(app.getPath("documents"), backup.defaultFileName(app.getVersion())),
+    filters: [{ name: "备份文件 (*.zip)", extensions: ["zip"] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    fs.writeFileSync(filePath, buf);
+  } catch (e) {
+    logger.error(`[backup] 写入失败: ${e.message}`);
+    return { ok: false, message: e.message };
+  }
+  logger.info(`[backup] 已导出 ${r.files} 个文件（${buf.length} 字节）→ ${filePath}`);
+  return {
+    ok: true,
+    path: filePath,
+    files: r.files,
+    bytes: buf.length,
+    skipped: r.skipped,
+    // 快照没拿到时如实告诉用户，别让他以为备份一定完整
+    warnSnapshot: !dbSnapshot,
+  };
+});
+
+/** 让用户挑一个备份包并检查它能不能恢复（不写任何东西） */
+ipcMain.handle("backup:pick", async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: "选择备份包",
+    properties: ["openFile"],
+    filters: [{ name: "备份文件 (*.zip)", extensions: ["zip"] }],
+  });
+  if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+  let buf;
+  try {
+    buf = fs.readFileSync(filePaths[0]);
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+  const info = backup.inspect(buf);
+  if (!info.ok) return { ok: false, message: info.message };
+  return { ok: true, path: filePaths[0], manifest: info.manifest, files: info.files.length };
+});
+
+/**
+ * 真正执行恢复。
+ *
+ * ⚠️ 必须先停掉后端再写：`data/` 里的 SQLite 被后端占着，
+ * 运行中覆盖轻则失败、重则把库写坏。写完直接重启应用，让后端打开恢复后的库。
+ */
+ipcMain.handle("backup:restore", async (_e, { path: zipPath } = {}) => {
+  let buf;
+  try {
+    buf = fs.readFileSync(zipPath);
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+  const info = backup.inspect(buf);
+  if (!info.ok) return { ok: false, message: info.message };
+
+  app.isQuiting = true; // 先置位：别让后端的退出触发「自动重启」
+  if (backendProc) {
+    try {
+      backendProc.kill();
+    } catch {
+      /* 杀不掉也继续，写入会给出真实错误 */
+    }
+  }
+  await new Promise((r) => setTimeout(r, 800));
+
+  const res = backup.apply(dataRoot(), buf);
+  logger.info(`[backup] 恢复完成：写入 ${res.written.length} 个，失败 ${res.failed.length} 个`);
+  if (res.failed.length) {
+    logger.error(`[backup] 恢复失败项: ${res.failed.join("; ")}`);
+    // 有失败就别重启了，把失败原因留给界面显示
+    app.isQuiting = false;
+    return { ok: false, message: res.failed.join("；"), written: res.written.length };
+  }
+
+  // 重启：让后端打开恢复后的库，渲染进程也重新加载一次
+  app.relaunch();
+  app.exit(0);
+  return { ok: true, written: res.written.length };
+});
+
+/**
+ * 取「恢复出来的渲染进程设置」，取完即删（一次性）。
+ *
+ * ⚠️ 渲染进程的设置存在 localStorage 里，主进程**写不进去** ——
+ * 所以恢复时只能把 settings.json 放在数据根，等下次启动由渲染进程自己取走并应用。
+ */
+ipcMain.handle("backup:takeRestoredSettings", () => {
+  const p = path.join(dataRoot(), RESTORED_SETTINGS);
+  if (!fs.existsSync(p)) return { ok: false };
+  try {
+    const settings = JSON.parse(fs.readFileSync(p, "utf8"));
+    fs.unlinkSync(p); // 只应用一次，避免以后每次启动都覆盖用户后来的改动
+    logger.info("[backup] 已应用恢复出来的渲染进程设置");
+    return { ok: true, settings };
+  } catch (e) {
+    logger.warn(`[backup] 恢复的设置读不出来: ${e.message}`);
+    return { ok: false };
+  }
 });
 
 // ---------------- 日志 ----------------

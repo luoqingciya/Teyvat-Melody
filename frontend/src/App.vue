@@ -123,6 +123,20 @@ onMounted(async () => {
     else toastError(`后台服务意外退出，正在自动重启（第 ${(p && p.attempt) || 1} 次）…`, 6000);
   });
   api?.onBackendAlive?.(() => toast("后台服务已恢复"));
+
+  // 从备份恢复后第一次启动：把备份里的设置应用一次。
+  // ⚠️ 设置存在 localStorage 里，主进程写不进去 —— 它只能把 settings.json 放在数据根，
+  //    由这里取走（取完即删，之后不再覆盖用户的新改动）。
+  try {
+    const restored = await api?.takeRestoredSettings?.();
+    if (restored && restored.ok && restored.settings) {
+      Object.assign(config, restored.settings);
+      toast("已应用备份中的设置");
+    }
+  } catch {
+    /* 取不到就算了，不该因为恢复设置失败而影响启动 */
+  }
+
   config.applyTheme();
   config.applyGlassFx();
   config.applyAccent();
