@@ -18,11 +18,9 @@
 `tests/paths.test.py` / `tests/data-root.test.js`。
 """
 
-import os
 import sys
-import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 # 安装版的数据目录名。**仅用于识别 v1.0.6 的旧位置**（那一版曾把安装版数据放在
 # %LOCALAPPDATA%/TeyvatMelody 以躲开卸载程序），启动时会把它搬回软件目录。
@@ -70,68 +68,11 @@ def is_installed_build(exe: Optional[Path] = None, frozen: Optional[bool] = None
         return False
 
 
-def is_dir_writable(directory: Path) -> bool:
-    """目录能不能写：真去建一个临时文件再删掉。
-
-    ⚠️ 比看权限位可靠 —— 还要考虑**只读挂载**（AppImage 的挂载点就是），
-    以及 Windows 上的只读属性。不这么做的话，deb 装到 /opt 之后应用会「看起来能启动，
-    一写数据就报错」。
-    """
-    probe = directory / f".write-probe-{os.getpid()}"
-    try:
-        probe.write_text("", "utf-8")
-        probe.unlink()
-        return True
-    except OSError:
-        return False
-
-
-def xdg_data_root(env: Optional[dict] = None) -> Path:
-    """XDG 数据目录：`$XDG_DATA_HOME/TeyvatMelody`，缺省 `~/.local/share/TeyvatMelody`。"""
-    e = os.environ if env is None else env
-    home = e.get("HOME") or ""
-    base = e.get("XDG_DATA_HOME") or (str(Path(home) / ".local" / "share") if home else "")
-    return Path(base) / APP_DIR_NAME if base else Path(tempfile.gettempdir()) / APP_DIR_NAME
-
-
-def _resolve_app_root(
-    *,
-    frozen: bool,
-    exe: Path,
-    project_root: Path,
-    platform: Optional[str] = None,
-    env: Optional[dict] = None,
-    can_write: Optional[Callable[[Path], bool]] = None,
-) -> Path:
-    """决定数据根目录（纯函数，便于自检）。
-
-    Windows / macOS：数据放软件目录（EXE 同级），自包含可搬移。
-
-    Linux 要分三种情况（**不能照搬 Windows 那条**）：
-      ① **AppImage**：`sys.executable` 指向 `/tmp/.mount_xxx/…` —— 只读的临时挂载点，
-         退出即消失。数据要放到 **`.AppImage` 文件旁边**（`$APPIMAGE` 是它的真实路径）。
-      ② **tar.gz 免安装版**：exe 在真实目录里且通常可写 → 和 Windows 一样放同级。
-      ③ **deb / 装到 `/opt` 这类只读位置**：同级写不进去 → 退回 XDG 数据目录。
-
-    ⚠️ 这套规则与主进程 `electron/dataRoot.js` 必须完全一致。
-    """
+def _resolve_app_root(*, frozen: bool, exe: Path, project_root: Path) -> Path:
+    """决定数据根目录（纯函数，便于自检）。"""
     if not frozen:
         return project_root
-    plat = platform or sys.platform
-    if plat != "linux":
-        return _install_dir(exe)
-
-    e = os.environ if env is None else env
-    appimage = e.get("APPIMAGE")
-    if appimage:
-        return Path(appimage).resolve().parent
-
-    root = _install_dir(exe)
-    writable = (can_write or is_dir_writable)(root)
-    if writable:
-        return root
-
-    return xdg_data_root(e)
+    return _install_dir(exe)
 
 
 def app_root() -> Path:

@@ -181,39 +181,23 @@ function backendCommand() {
   if (IS_DEV) {
     // 开发：用项目 venv 的 python 跑 electron_backend.py
     const root = path.join(__dirname, "..");
-    // ⚠️ 虚拟环境里的解释器位置按平台不同：Windows 在 Scripts/python.exe，
-    //    Linux/macOS 在 bin/python —— 写死前者会让 Linux 开发模式直接起不来。
-    const binDirs = process.platform === "win32" ? ["Scripts"] : ["bin"];
-    const names = process.platform === "win32" ? ["python.exe"] : ["python", "python3"];
-    const candidates = [];
-    for (const v of [".venv", "venv"]) {
-      for (const b of binDirs) {
-        for (const n of names) candidates.push(path.join(root, v, b, n));
-      }
-    }
+    const candidates = [
+      path.join(root, ".venv", "Scripts", "python.exe"),
+      path.join(root, "venv", "Scripts", "python.exe"),
+    ];
     for (const p of candidates) {
       if (fs.existsSync(p)) {
         return { cmd: p, args: [path.join(root, "electron_backend.py")], cwd: root };
       }
     }
-    throw new Error("未找到虚拟环境里的 Python，请先创建 .venv（uv sync）");
+    throw new Error("未找到 .venv 的 python.exe，请先创建虚拟环境");
   }
   // 打包：运行随应用分发的后端 exe（electron-builder extraResources/backend）
   return locateBackendExe();
 }
 
-/**
- * 后端可执行文件的名字。
- *
- * ⚠️ Linux/macOS 上 PyInstaller 产出的是**无扩展名的 ELF/Mach-O**，
- * 写死 `.exe` 会让 `locateBackendExe()` 直接抛「未找到后端程序」——应用根本起不来。
- */
-function backendExeName() {
-  return process.platform === "win32" ? "TeyvatBackend.exe" : "TeyvatBackend";
-}
-
 function findBackendExe(dir) {
-  const direct = path.join(dir, backendExeName());
+  const direct = path.join(dir, "TeyvatBackend.exe");
   if (fs.existsSync(direct)) return { exe: direct, cwd: dir };
   for (const entry of fs.readdirSync(dir)) {
     const full = path.join(dir, entry);
@@ -233,7 +217,7 @@ function locateBackendExe() {
   const root = path.join(process.resourcesPath, "backend");
   const found = findBackendExe(root);
   if (found) return { cmd: found.exe, args: [], cwd: found.cwd };
-  throw new Error(`未找到后端程序 ${backendExeName()}，请检查 resources/backend 目录是否完整`);
+  throw new Error("未找到后端程序 TeyvatBackend.exe，请检查 resources/backend 目录是否完整");
 }
 
 // 后端崩溃后的自动重启策略：窗口期内最多重启几次，避免「崩→重启→崩」死循环。
@@ -550,20 +534,10 @@ function miniToggle() {
 // ---------------- 托盘 + 单实例 ----------------
 
 function createTray() {
-  // ⚠️ 图标按平台选：Linux 的托盘不认 .ico，必须用 png（否则托盘是个空白/破图）
-  const iconFile = process.platform === "win32" ? "TeyvatMelody.ico" : "TeyvatMelody.png";
   const iconPath = IS_DEV
-    ? path.join(__dirname, "..", "resources", iconFile)
-    : path.join(process.resourcesPath, "resources", iconFile);
-  // ⚠️ Linux 上托盘依赖 StatusNotifier / appindicator，精简桌面环境里可能根本没有 ——
-  //    `new Tray()` 会直接抛。绝不能因为「没有托盘」就让整个应用起不来。
-  try {
-    tray = new Tray(fs.existsSync(iconPath) ? iconPath : nativeImage.createEmpty());
-  } catch (e) {
-    logger.warn(`[tray] 托盘不可用（${e.message}）—— 应用继续运行，只是没有托盘图标`);
-    tray = null;
-    return;
-  }
+    ? path.join(__dirname, "..", "resources", "TeyvatMelody.ico")
+    : path.join(process.resourcesPath, "resources", "TeyvatMelody.ico");
+  tray = new Tray(fs.existsSync(iconPath) ? iconPath : nativeImage.createEmpty());
   tray.setToolTip("提瓦特旋律");
   tray.setContextMenu(
     Menu.buildFromTemplate([
